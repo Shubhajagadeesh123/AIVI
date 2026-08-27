@@ -379,7 +379,9 @@ def process_command():
 
 @app.route("/api/directions", methods=["POST"])
 def get_directions():
-    """Get walking directions using Google Directions API and Google Geocoding API"""
+    """Get walking directions using free OpenStreetMap services -
+    Nominatim for geocoding and the FOSSGIS OSRM instance for routing.
+    No API key or billing account required."""
     try:
         data = request.get_json()
 
@@ -391,17 +393,6 @@ def get_directions():
 
         origin = data["origin"]  # Expected format: "lat,lng"
         destination = data["destination"]  # Can be address text or "lat,lng"
-
-        # Get Google API key from environment
-        api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-        if not api_key:
-            logging.error("GOOGLE_MAPS_API_KEY not found in environment variables")
-            return (
-                jsonify(
-                    {"success": False, "message": "Navigation service not configured"}
-                ),
-                500,
-            )
 
         # Validate origin coordinates format
         coord_pattern = r"^-?\d+\.?\d*,-?\d+\.?\d*$"
@@ -431,43 +422,32 @@ def get_directions():
 
         # Check if destination is coordinates or address text
         destination_coords = destination
+        destination_display_name = destination
         if not re.match(coord_pattern, destination):
-            # Destination is text address - try to geocode it first
+            # Destination is text address - geocode it via Nominatim,
+            # biased towards the user's current location so ambiguous
+            # names ("library", "pharmacy") resolve to a nearby match.
             logging.info(f"Geocoding destination: {destination}")
 
-            # Try standard geocoding first
-            geocoded_coords = geocode_address(destination, api_key)
+            geocoded = geocode_address_osm(destination, origin_lat, origin_lng)
 
-            # If geocoding fails and it's a generic term, try Places API search
-            if not geocoded_coords or "error" in geocoded_coords:
-                logging.info(
-                    f"Standard geocoding failed, trying Places API for: {destination}"
+            if not geocoded or "error" in geocoded:
+                message = (
+                    geocoded.get("message")
+                    if geocoded
+                    else f'Could not find "{destination}" near your location. Please try a more specific address.'
                 )
-                places_result = find_nearby_place(destination, origin, api_key)
-                if places_result and "lat" in places_result:
-                    geocoded_coords = places_result
-                    logging.info(f"Found place via Places API: {destination}")
-                else:
-                    return (
-                        jsonify(
-                            {
-                                "success": False,
-                                "message": f'Could not find "{destination}" near your location. Please try a more specific address.',
-                            }
-                        ),
-                        404,
-                    )
-
-            if "error" in geocoded_coords:
                 return (
-                    jsonify({"success": False, "message": geocoded_coords["message"]}),
+                    jsonify({"success": False, "message": message}),
                     404,
                 )
-            destination_coords = f"{geocoded_coords['lat']},{geocoded_coords['lng']}"
+
+            destination_coords = f"{geocoded['lat']},{geocoded['lng']}"
+            destination_display_name = geocoded.get("display_name", destination)
             logging.info(f"Geocoded '{destination}' to {destination_coords}")
 
-        # Get walking directions from Google Directions API
-        directions_data = get_google_directions(origin, destination_coords, api_key)
+        # Get walking directions from the FOSSGIS OSRM instance
+        directions_data = get_osrm_directions(origin, destination_coords)
 
         if not directions_data:
             return jsonify({"success": False, "message": "Route not available"}), 404
@@ -479,10 +459,12 @@ def get_directions():
 
         # Parse and format the directions for voice navigation
         try:
-            navigation_data = parse_google_directions(directions_data, destination)
+            navigation_data = parse_osrm_directions(
+                directions_data, destination_display_name
+            )
             return jsonify(navigation_data)
         except Exception as parse_error:
-            logging.error(f"Error parsing Google directions: {parse_error}")
+            logging.error(f"Error parsing OSRM directions: {parse_error}")
             return (
                 jsonify(
                     {"success": False, "message": "Failed to parse navigation data"}
@@ -491,7 +473,7 @@ def get_directions():
             )
 
     except requests.exceptions.Timeout:
-        logging.error("Google API timeout")
+        logging.error("Routing service timeout")
         return jsonify({"success": False, "message": "Navigation service timeout"}), 504
     except requests.exceptions.RequestException as e:
         logging.error(f"HTTP error getting directions: {e}")
@@ -502,15 +484,6 @@ def get_directions():
     except Exception as e:
         logging.error(f"Error getting directions: {e}")
         return jsonify({"success": False, "message": "Navigation service error"}), 500
-
-
-@app.route("/api/google-maps-key", methods=["GET"])
-def get_google_maps_key():
-    """Get Google Maps API key for frontend"""
-    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
-    if not api_key:
-        return jsonify({"error": "Google Maps API key not configured"}), 500
-    return jsonify({"key": api_key})
 
 
 @app.route("/api/preferences", methods=["GET", "POST"])
@@ -733,242 +706,243 @@ def enhance_search_terms(address):
     return address
 
 
-def find_nearby_place(place_type, origin_coords, api_key):
-    """Find nearby places using Google Places API"""
+# Free OpenStreetMap-based navigation. No API key, no billing account.
+#
+# - Nominatim (nominatim.openstreetmap.org) for geocoding/search.
+# - FOSSGIS's public OSRM instance (routing.openstreetmap.de) for
+#   pedestrian ("foot") turn-by-turn routing.
+#
+# Both are shared community infrastructure with a strict usage policy:
+# max ~1 request/second, a real identifying User-Agent, and no heavy/
+# scripted scraping. We stay well within that since this endpoint only
+# fires when a person actually asks to navigate somewhere. If AIVI ever
+# gets heavy usage, self-hosting Nominatim/OSRM (or moving to a paid
+# provider) is the right next step - see:
+# https://operations.osmfoundation.org/policies/nominatim/
+# https://github.com/fossgis-routing-server
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+OSRM_FOOT_URL = "https://routing.openstreetmap.de/routed-foot/route/v1/foot"
+OSM_USER_AGENT = "AIVI-VoiceNavigation/1.0 (accessibility assistant; contact via app settings)"
+
+
+def geocode_address_osm(address, near_lat=None, near_lng=None):
+    """Geocode an address/place name using Nominatim, optionally biased
+    towards a nearby point so ambiguous queries like "pharmacy" or
+    "library" resolve to the closest sensible match."""
     try:
-        # Extract coordinates from origin
-        origin_lat, origin_lng = map(float, origin_coords.split(","))
-
-        # Map common terms to Google Places types
-        place_type_mapping = {
-            "library": "library",
-            "hospital": "hospital",
-            "school": "school",
-            "restaurant": "restaurant",
-            "pharmacy": "pharmacy",
-            "bank": "bank",
-            "grocery store": "grocery_or_supermarket",
-            "gas station": "gas_station",
-            "shopping mall": "shopping_mall",
-            "park": "park",
-            "gym": "gym",
-            "university": "university",
-            "college": "university",
-            "airport": "airport",
-            "train station": "train_station",
-            "bus station": "bus_station",
-            "hotel": "lodging",
-            "cinema": "movie_theater",
-            "movie theater": "movie_theater",
-            "coffee shop": "cafe",
-            "post office": "post_office",
-        }
-
-        # Get the Places API type
-        search_type = place_type_mapping.get(place_type.lower(), place_type.lower())
-
-        # Use Places API Nearby Search
-        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-        params = {
-            "location": f"{origin_lat},{origin_lng}",
-            "radius": 5000,  # 5km radius
-            "type": search_type,
-            "key": api_key,
-        }
-
-        logging.info(f"Searching for nearby {search_type} at {origin_lat},{origin_lng}")
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-
-        data = response.json()
-        status = data.get("status")
-
-        if status == "OK" and data.get("results"):
-            # Get the first (closest) result
-            place = data["results"][0]
-            location = place["geometry"]["location"]
-            place_name = place.get("name", place_type)
-
-            logging.info(f"Found nearby {place_type}: {place_name}")
-            return {"lat": location["lat"], "lng": location["lng"], "name": place_name}
-        else:
-            logging.warning(f"No nearby {place_type} found via Places API")
-            return None
-
-    except Exception as e:
-        logging.error(f"Error finding nearby place: {e}")
-        return None
-
-
-def geocode_address(address, api_key):
-    """Geocode address using Google Geocoding API with enhanced search"""
-    try:
-        # Enhance generic search terms for better geocoding results
         enhanced_address = enhance_search_terms(address)
 
-        url = "https://maps.googleapis.com/maps/api/geocode/json"
-        params = {"address": enhanced_address, "key": api_key}
-
-        logging.info(f"Geocoding address: {address} (enhanced: {enhanced_address})")
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-
-        try:
-            data = response.json()
-        except Exception as e:
-            logging.error(f"Failed to parse geocoding response: {e}")
-            return None
-
-        # Check for Google API errors with specific handling
-        status = data.get("status")
-        if status != "OK":
-            if status == "ZERO_RESULTS":
-                logging.warning(f"No results found for address: {address}")
-                return {
-                    "error": "ZERO_RESULTS",
-                    "message": "Location not found, please try again.",
-                }
-            elif status == "REQUEST_DENIED":
-                logging.error(f"Google API request denied for address: {address}")
-                return {
-                    "error": "REQUEST_DENIED",
-                    "message": "Navigation service unavailable",
-                }
-            else:
-                logging.error(f"Google Geocoding API error: {status}")
-                return {"error": status, "message": "Unable to find location"}
-
-        # Extract coordinates
-        if data.get("results") and len(data["results"]) > 0:
-            location = data["results"][0]["geometry"]["location"]
-            return {"lat": location["lat"], "lng": location["lng"]}
-
-        return None
-
-    except requests.exceptions.Timeout:
-        logging.error("Google Geocoding API timeout")
-        return None
-    except requests.exceptions.RequestException as e:
-        logging.error(f"HTTP error geocoding address: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"Geocoding error: {e}")
-        return None
-
-
-def get_google_directions(origin, destination, api_key):
-    """Get walking directions from Google Directions API"""
-    try:
-        url = "https://maps.googleapis.com/maps/api/directions/json"
         params = {
-            "origin": origin,
-            "destination": destination,
-            "mode": "walking",
-            "units": "metric",
-            "language": "en",
-            "key": api_key,
+            "q": enhanced_address,
+            "format": "jsonv2",
+            "limit": 1,
+            "addressdetails": 0,
         }
 
-        logging.info(f"Getting Google directions from {origin} to {destination}")
-        response = requests.get(url, params=params, timeout=30)
+        # Bias results towards the user's location with a generous
+        # viewbox (~0.5 degrees, roughly 50km) without hard-excluding
+        # results outside it - keeps "take me to the Eiffel Tower"
+        # working even if the user isn't in Paris.
+        if near_lat is not None and near_lng is not None:
+            params["viewbox"] = (
+                f"{near_lng-0.5},{near_lat+0.5},{near_lng+0.5},{near_lat-0.5}"
+            )
+            params["bounded"] = 0
+
+        headers = {"User-Agent": OSM_USER_AGENT}
+
+        logging.info(f"Geocoding via Nominatim: {address} (enhanced: {enhanced_address})")
+        response = requests.get(
+            NOMINATIM_URL, params=params, headers=headers, timeout=30
+        )
         response.raise_for_status()
 
-        # Parse response safely
+        try:
+            results = response.json()
+        except Exception as e:
+            logging.error(f"Failed to parse Nominatim response: {e}")
+            return {"error": "PARSE_ERROR", "message": "Unable to find location"}
+
+        if not results:
+            logging.warning(f"No Nominatim results for: {address}")
+            return {
+                "error": "ZERO_RESULTS",
+                "message": f'Could not find "{address}" near your location. Please try a more specific address.',
+            }
+
+        top = results[0]
+        return {
+            "lat": float(top["lat"]),
+            "lng": float(top["lon"]),
+            "display_name": top.get("display_name", address),
+        }
+
+    except requests.exceptions.Timeout:
+        logging.error("Nominatim geocoding timeout")
+        return {"error": "TIMEOUT", "message": "Navigation service timeout"}
+    except requests.exceptions.RequestException as e:
+        logging.error(f"HTTP error geocoding address via Nominatim: {e}")
+        return {"error": "REQUEST_FAILED", "message": "Navigation service unavailable"}
+    except Exception as e:
+        logging.error(f"Nominatim geocoding error: {e}")
+        return {"error": "UNKNOWN", "message": "Unable to find location"}
+
+
+def get_osrm_directions(origin, destination):
+    """Get walking directions from the FOSSGIS public OSRM instance
+    (pedestrian/foot profile). origin and destination are 'lat,lng'."""
+    try:
+        origin_lat, origin_lng = origin.split(",")
+        dest_lat, dest_lng = destination.split(",")
+
+        # OSRM expects lon,lat order (opposite of the lat,lng convention
+        # used elsewhere in this app), and semicolon-separated waypoints.
+        coords = f"{origin_lng},{origin_lat};{dest_lng},{dest_lat}"
+        url = f"{OSRM_FOOT_URL}/{coords}"
+        params = {
+            "overview": "full",
+            "geometries": "geojson",
+            "steps": "true",
+        }
+        headers = {"User-Agent": OSM_USER_AGENT}
+
+        logging.info(f"Getting OSRM walking directions from {origin} to {destination}")
+        response = requests.get(url, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
+
         try:
             data = response.json()
         except Exception as e:
-            logging.error(f"Failed to parse Google response as JSON: {e}")
+            logging.error(f"Failed to parse OSRM response as JSON: {e}")
             logging.error(f"Response content: {response.text[:500]}")
             return None
 
-        # Check for Google API errors with specific handling
-        status = data.get("status")
-        if status != "OK":
-            if status == "ZERO_RESULTS":
-                logging.warning(f"No route found from {origin} to {destination}")
+        code = data.get("code")
+        if code != "Ok":
+            if code == "NoRoute":
+                logging.warning(f"No walking route found from {origin} to {destination}")
                 return {"error": "ZERO_RESULTS", "message": "Route not available"}
-            elif status == "NOT_FOUND":
-                logging.warning(
-                    f"Location not found for directions: {origin} to {destination}"
-                )
+            elif code in ("InvalidInput", "NoSegment"):
                 return {
                     "error": "NOT_FOUND",
                     "message": "Location not found, please try again.",
                 }
-            elif status == "REQUEST_DENIED":
-                logging.error(f"Google Directions API request denied")
-                return {
-                    "error": "REQUEST_DENIED",
-                    "message": "Navigation service unavailable",
-                }
             else:
-                error_msg = data.get("error_message", "Unknown error")
-                logging.error(f"Google Directions API error: {status} - {error_msg}")
-                return {"error": status, "message": "Route not available"}
+                logging.error(f"OSRM API error: {code} - {data.get('message')}")
+                return {"error": code, "message": "Route not available"}
 
-        # Validate Google response structure
         if not data.get("routes") or len(data["routes"]) == 0:
-            logging.error("Google returned no routes")
+            logging.error("OSRM returned no routes")
             return None
 
         route = data["routes"][0]
         if not route.get("legs") or len(route["legs"]) == 0:
-            logging.error("Google route has no legs")
+            logging.error("OSRM route has no legs")
             return None
 
         return data
 
     except requests.exceptions.Timeout:
-        logging.error("Google Directions API timeout")
+        logging.error("OSRM directions timeout")
         return None
     except requests.exceptions.RequestException as e:
-        logging.error(f"HTTP error getting Google directions: {e}")
+        logging.error(f"HTTP error getting OSRM directions: {e}")
         return None
     except Exception as e:
-        logging.error(f"Google directions error: {e}")
+        logging.error(f"OSRM directions error: {e}")
         return None
 
 
-def parse_google_directions(directions_data, destination_name):
-    """Parse Google Directions API response for voice navigation"""
+def build_instruction_from_maneuver(maneuver, street_name):
+    """Turn an OSRM maneuver (type + modifier) into a plain-English,
+    voice-friendly instruction. OSRM doesn't provide ready-made prose
+    like Google's html_instructions did, so we build it ourselves from
+    https://project-osrm.org/docs/v5.24.0/api/#stepmaneuver-object"""
+    m_type = maneuver.get("type", "continue")
+    modifier = maneuver.get("modifier")
+    name = street_name.strip() if street_name else ""
+    onto_name = f" onto {name}" if name else ""
+    along_name = f" along {name}" if name else ""
+
+    if m_type == "depart":
+        if modifier:
+            return f"Head {modifier}{along_name}".strip()
+        return f"Start walking{along_name}".strip() or "Start walking"
+
+    if m_type == "arrive":
+        if modifier in ("left", "right"):
+            return f"You have arrived, your destination is on the {modifier}"
+        return "You have arrived at your destination"
+
+    if m_type == "turn":
+        if modifier:
+            return f"Turn {modifier}{onto_name}".strip()
+        return f"Continue{onto_name}".strip() or "Continue straight"
+
+    if m_type == "new name":
+        return f"Continue{onto_name}".strip() or "Continue straight"
+
+    if m_type == "merge":
+        return f"Merge{onto_name}".strip() or "Merge"
+
+    if m_type in ("on ramp", "off ramp"):
+        return f"Take the {m_type}{onto_name}".strip()
+
+    if m_type == "fork":
+        if modifier:
+            return f"Keep {modifier} at the fork{onto_name}".strip()
+        return f"Continue at the fork{onto_name}".strip()
+
+    if m_type == "end of road":
+        if modifier:
+            return f"Turn {modifier} at the end of the road{onto_name}".strip()
+        return f"Continue{onto_name}".strip() or "Continue straight"
+
+    if m_type in ("roundabout", "rotary", "roundabout turn"):
+        exit_num = maneuver.get("exit")
+        if exit_num:
+            return f"At the roundabout, take exit {exit_num}{onto_name}".strip()
+        return f"Go through the roundabout{onto_name}".strip()
+
+    if m_type == "continue":
+        if modifier and modifier != "straight":
+            return f"Continue {modifier}{onto_name}".strip()
+        return f"Continue straight{along_name}".strip() or "Continue straight"
+
+    # Fallback for any maneuver type not explicitly handled above
+    return f"Continue{onto_name}".strip() or "Continue straight"
+
+
+def parse_osrm_directions(directions_data, destination_name):
+    """Parse an OSRM /route response into the same shape the frontend
+    already expects (previously produced from Google's Directions API)."""
     try:
-        # Validate main structure
         if not directions_data.get("routes") or len(directions_data["routes"]) == 0:
-            raise ValueError("No routes in Google response")
+            raise ValueError("No routes in OSRM response")
 
         route = directions_data["routes"][0]
 
-        # Get route legs (Google uses legs instead of segments)
         legs = route.get("legs", [])
         if not legs:
             raise ValueError("Missing route legs")
 
-        # Calculate total distance and duration from all legs
-        total_distance_m = 0
-        total_duration_s = 0
+        total_distance_m = route.get("distance", 0)
+        total_duration_s = route.get("duration", 0)
 
-        # Parse each step from all legs
         steps = []
         step_number = 1
 
         for leg in legs:
-            # Add leg distance and duration to totals
-            total_distance_m += leg.get("distance", {}).get("value", 0)
-            total_duration_s += leg.get("duration", {}).get("value", 0)
-
-            # Get steps from this leg
             leg_steps = leg.get("steps", [])
 
             for step in leg_steps:
-                # Extract step information
-                distance_m = step.get("distance", {}).get("value", 0)
-                duration_s = step.get("duration", {}).get("value", 0)
-                html_instruction = step.get("html_instructions", "Continue straight")
+                distance_m = step.get("distance", 0)
+                duration_s = step.get("duration", 0)
+                street_name = step.get("name", "")
+                maneuver = step.get("maneuver", {})
 
-                # Clean HTML tags from instruction
-                instruction = clean_html_instruction(html_instruction)
+                instruction = build_instruction_from_maneuver(maneuver, street_name)
 
-                # Format step distance and duration
                 step_distance = (
                     f"{distance_m:.0f} m"
                     if distance_m < 1000
@@ -980,9 +954,20 @@ def parse_google_directions(directions_data, destination_name):
                     else f"{duration_s:.0f} sec"
                 )
 
-                # Get start and end coordinates
-                start_location = step.get("start_location", {})
-                end_location = step.get("end_location", {})
+                # OSRM gives maneuver location as [lon, lat]; the step's
+                # own geometry (if present) gives start/end. We fall back
+                # to the maneuver point for both when geometry is absent.
+                maneuver_location = maneuver.get("location", [0, 0])
+                start_location = {
+                    "lat": maneuver_location[1],
+                    "lng": maneuver_location[0],
+                }
+                geometry_coords = step.get("geometry", {}).get("coordinates", [])
+                if geometry_coords:
+                    end_lon, end_lat = geometry_coords[-1]
+                    end_location = {"lat": end_lat, "lng": end_lon}
+                else:
+                    end_location = start_location
 
                 step_data = {
                     "step_number": step_number,
@@ -992,21 +977,14 @@ def parse_google_directions(directions_data, destination_name):
                     "distance_meters": distance_m,
                     "distance_value": distance_m,  # Add for frontend compatibility
                     "duration_seconds": duration_s,
-                    "start_location": {
-                        "lat": start_location.get("lat", 0),
-                        "lng": start_location.get("lng", 0),
-                    },
-                    "end_location": {
-                        "lat": end_location.get("lat", 0),
-                        "lng": end_location.get("lng", 0),
-                    },
-                    "maneuver": step.get("maneuver", "straight"),
-                    "travel_mode": step.get("travel_mode", "WALKING"),
+                    "start_location": start_location,
+                    "end_location": end_location,
+                    "maneuver": maneuver.get("type", "straight"),
+                    "travel_mode": "WALKING",
                 }
                 steps.append(step_data)
                 step_number += 1
 
-        # Format total distance and duration
         total_distance = (
             f"{total_distance_m:.0f} m"
             if total_distance_m < 1000
@@ -1018,7 +996,6 @@ def parse_google_directions(directions_data, destination_name):
             else f"{total_duration_s:.0f} sec"
         )
 
-        # Ensure we have at least one step
         if not steps:
             steps.append(
                 {
@@ -1035,17 +1012,13 @@ def parse_google_directions(directions_data, destination_name):
                 }
             )
 
-        # Get route overview
-        overview_polyline = route.get("overview_polyline", {}).get("points", "")
-        bounds = route.get("bounds", {})
-        start_address = (
-            legs[0].get("start_address", "Current Location")
-            if legs
-            else "Current Location"
-        )
-        end_address = (
-            legs[-1].get("end_address", destination_name) if legs else destination_name
-        )
+        # Full route geometry as [lat, lng] pairs, for drawing the route
+        # on a Leaflet map (replaces Google's encoded overview_polyline).
+        route_coords = route.get("geometry", {}).get("coordinates", [])
+        overview_path = [[lat, lng] for lng, lat in route_coords]
+
+        start_address = "Current Location"
+        end_address = destination_name
 
         return {
             "success": True,
@@ -1057,37 +1030,16 @@ def parse_google_directions(directions_data, destination_name):
                 "steps": steps,
                 "start_address": start_address,
                 "end_address": end_address,
-                "overview_polyline": overview_polyline,
-                "bounds": bounds,
+                "overview_path": overview_path,
             },
         }
 
     except (KeyError, IndexError, TypeError) as e:
-        logging.error(f"Error parsing Google directions data: {e}")
+        logging.error(f"Error parsing OSRM directions data: {e}")
         logging.error(
-            f"Google response structure keys: {list(directions_data.keys()) if isinstance(directions_data, dict) else 'Not a dict'}"
+            f"OSRM response structure keys: {list(directions_data.keys()) if isinstance(directions_data, dict) else 'Not a dict'}"
         )
-        raise ValueError("Invalid Google directions data format")
-
-
-def clean_html_instruction(html_instruction):
-    """Remove HTML tags from Google's instruction text"""
-    import re
-
-    if not html_instruction:
-        return "Continue straight"
-
-    # Remove HTML tags
-    clean_text = re.sub("<[^<]+?>", "", html_instruction)
-
-    # Decode HTML entities
-    clean_text = clean_text.replace("&nbsp;", " ")
-    clean_text = clean_text.replace("&amp;", "&")
-    clean_text = clean_text.replace("&lt;", "<")
-    clean_text = clean_text.replace("&gt;", ">")
-    clean_text = clean_text.replace("&quot;", '"')
-
-    return clean_text.strip()
+        raise ValueError("Invalid OSRM directions data format")
 
 
 def clean_instruction_text(instruction):

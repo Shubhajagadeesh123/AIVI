@@ -21,6 +21,13 @@
 
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css', v='3') }}" />
 
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
 
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -396,43 +403,21 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
-    <!-- Google Maps -->
+    <!-- Leaflet (free OpenStreetMap map, no API key/billing required) -->
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <script>
-      function initMap() {
-        window.googleMapsLoaded = true;
-
+      document.addEventListener("DOMContentLoaded", () => {
         // navigation.js creates the single navigation instance on
         // DOMContentLoaded as window.blindMateNavigation - use that same
-        // instance here so the map and voice-driven navigation stay in sync.
+        // instance here so the map and voice-driven navigation stay in
+        // sync. Leaflet's script tag above is synchronous, so window.L
+        // is guaranteed to exist by the time this runs.
         if (window.blindMateNavigation) {
           window.blindMateNavigation.initializeMap();
         }
-      }
-
-      async function loadGoogleMapsAPI() {
-        try {
-          const response = await fetch("/api/google-maps-key");
-
-          const data = await response.json();
-
-          if (data.key) {
-            const script = document.createElement("script");
-
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${data.key}&callback=initMap&libraries=places`;
-
-            script.async = true;
-
-            script.defer = true;
-
-            document.head.appendChild(script);
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      }
-
-      document.addEventListener("DOMContentLoaded", loadGoogleMapsAPI);
+      });
     </script>
 
     <!-- Existing JS -->

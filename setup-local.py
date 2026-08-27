@@ -81,8 +81,9 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Session secret for Flask (generate a random string)
 SESSION_SECRET=your_secret_session_key_here
 
-# Optional: Google Maps API Key for enhanced navigation
-GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+# Navigation (walking directions + map) runs on free OpenStreetMap
+# services - Nominatim for geocoding and the FOSSGIS OSRM instance for
+# routing. No API key or billing account needed for these.
 """
 
     try:

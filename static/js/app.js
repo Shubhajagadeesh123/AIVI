@@ -185,6 +185,11 @@ class Netra {
     this.currentListeningTimeout = null;
     this.speechDetected = false;
 
+    // Navigation shortcut: when true, the very next thing the user says
+    // is treated as a destination and passed straight to navigation,
+    // bypassing normal AI command routing entirely.
+    this.awaitingDestinationInput = false;
+
     // Mobile double-tap gesture detection
     this.lastTapTime = 0;
     this.tapTimeout = null;
@@ -463,15 +468,20 @@ class Netra {
 
       // Load TensorFlow model (optional - app works without it)
       await this.loadModel();
-      document
 
-        .getElementById("describeSceneBtn")
+      // This used to call getElementById(...).addEventListener(...)
+      // directly with no null-check, unlike every other button binding
+      // in this file. If that element were ever missing for any reason,
+      // this throws synchronously and aborts the rest of init() - since
+      // this line runs partway through init(), anything wired up after
+      // it (including features unrelated to Describe Scene) would
+      // silently never get set up. Guarding it costs nothing and
+      // matches the pattern used everywhere else.
+      const describeSceneBtn = document.getElementById("describeSceneBtn");
+      if (describeSceneBtn) {
+        describeSceneBtn.addEventListener("click", () => this.describeScene());
+      }
 
-        .addEventListener(
-          "click",
-
-          () => this.describeScene(),
-        );
       // Ensure loading overlay is hidden after initialization
       const loadingOverlay = document.getElementById("loadingOverlay");
       if (loadingOverlay) {
@@ -974,6 +984,26 @@ class Netra {
       );
     }
 
+    // The "Navigation" action card existed in the HTML but had no click
+    // handler wired up at all - tapping it did nothing. This is now the
+    // one-tap navigation shortcut: stop object detection, ask where to
+    // go, listen once, then start navigating.
+    const navigationBtn = document.getElementById("navigationBtn");
+    if (navigationBtn) {
+      navigationBtn.addEventListener("click", () => {
+        this.startNavigationShortcut();
+      });
+    }
+
+    // Same story as navigationBtn above - "Memory" existed in the HTML
+    // with no click handler at all, so tapping it silently did nothing.
+    const memoryBtn = document.getElementById("memoryBtn");
+    if (memoryBtn) {
+      memoryBtn.addEventListener("click", () => {
+        this.showMemorySummary();
+      });
+    }
+
     const ocrBtn = document.getElementById("ocrBtn");
     if (ocrBtn) {
       ocrBtn.addEventListener("click", () => {
@@ -1048,6 +1078,13 @@ class Netra {
           case "l":
             e.preventDefault();
             this.requestLocation();
+            break;
+          case "g":
+            // "G" for "Go" - the keyboard equivalent of tapping the
+            // Navigation button: stop object detection, ask for a
+            // destination, and start navigating in one step.
+            e.preventDefault();
+            this.startNavigationShortcut();
             break;
         }
 
@@ -1140,6 +1177,28 @@ class Netra {
 
       // Mark that speech was detected
       this.speechDetected = true;
+
+      // Navigation shortcut in progress - the user was just asked "Where
+      // would you like to go?", so treat whatever they said as the
+      // destination directly instead of running it through general AI
+      // command classification (which could easily misinterpret a bare
+      // place name like "the library" as some other kind of command).
+      if (this.awaitingDestinationInput) {
+        this.awaitingDestinationInput = false;
+        this.showRecognizedCommand(command);
+        if (command.length > 1) {
+          this.navigateToLocation(command).finally(() => {
+            this.resumeDetectionAfterInteraction();
+          });
+        } else {
+          this.speak(
+            "I didn't catch a destination. Say 'navigate' again when you're ready.",
+            true,
+          );
+          this.resumeDetectionAfterInteraction();
+        }
+        return;
+      }
 
       // Process all reasonable commands - many speech recognition engines return 0 confidence
       if (command.length > 2) {
@@ -1296,9 +1355,15 @@ class Netra {
       console.log("Continuous recognition error:", event.error);
       this.continuousRecognitionRunning = false;
       if (event.error !== "aborted") {
-        // Restart continuous listening after a short delay
+        // Restart continuous listening after a short delay - but only if
+        // Netra isn't actively speaking right now. Without the isSpeaking
+        // check, this restart could fire in the middle of a long TTS
+        // utterance (a "no-speech" error is common right after
+        // stopContinuousListening() is called for exactly that reason),
+        // reopening the mic mid-sentence and causing it to transcribe
+        // Netra's own voice as if the user had said it.
         setTimeout(() => {
-          if (this.isListeningForWakeWord) {
+          if (this.isListeningForWakeWord && !this.isSpeaking) {
             this.startContinuousListening();
           }
         }, 1000);
@@ -1307,13 +1372,91 @@ class Netra {
 
     this.continuousRecognition.onend = () => {
       this.continuousRecognitionRunning = false;
-      // Restart continuous listening if it should be active
-      if (this.isListeningForWakeWord && !this.isListening) {
+      // Restart continuous listening if it should be active - same
+      // isSpeaking guard as above, for the same reason.
+      if (this.isListeningForWakeWord && !this.isListening && !this.isSpeaking) {
         setTimeout(() => {
           this.startContinuousListening();
         }, 500);
       }
     };
+  }
+
+  /**
+   * Navigation shortcut: one action (button, keyboard shortcut, or voice
+   * phrase) that stops object detection, asks where the user wants to
+   * go, listens for just that answer, then starts navigation directly -
+   * no wake word, no round trip through general AI command routing.
+   */
+  async startNavigationShortcut() {
+    console.log("Navigation shortcut triggered");
+
+    // Stop object detection outright (not just pause) - it competes for
+    // the camera/attention and the user explicitly wants navigation now.
+    // silent=true: stopDetection() normally speaks "Object detection
+    // stopped." itself - saying that AND "Where would you like to go?"
+    // back-to-back caused the two utterances to collide/cancel each
+    // other unpredictably (visible in logs as one cutting the other
+    // off), and the gap between them was enough time for continuous
+    // listening to sneak back on and swallow the user's actual answer.
+    if (this.isDetecting) {
+      this.stopDetection(true);
+    }
+
+    // Make sure nothing else is mid-speech or mid-listen before we take
+    // over the mic, same precautions startVoiceCommand() takes.
+    speechSynthesis.cancel();
+    this.isSpeaking = false;
+    this.stopContinuousListening();
+    try {
+      this.commandRecognition.stop();
+    } catch (e) {
+      // Ignore - fine if it wasn't running
+    }
+
+    this.awaitingDestinationInput = true;
+
+    // Reserve the microphone for this flow RIGHT NOW, before speaking -
+    // not after commandRecognition.start() actually runs a moment later.
+    // Without this, navigation.js's utterance.onend handler (which fires
+    // the instant "Where would you like to go?" finishes) sees
+    // isListening still false - since commandRecognition genuinely
+    // hasn't started yet - and "helpfully" resumes continuous wake-word
+    // listening right then. That reopened mic then competes with (and
+    // has been observed to win over) the commandRecognition session that
+    // starts a beat later, so the destination the user actually speaks
+    // gets captured as wake-word fragments instead of reaching
+    // navigateToLocation() at all. Reserving the flag first closes that
+    // gap entirely.
+    this.isListening = true;
+
+    this.speak("Where would you like to go?", true);
+    // Set this synchronously - see the identical comment in
+    // startVoiceCommand() for why waiting on navigation.js's onstart
+    // event alone isn't reliable enough here.
+    this.isSpeaking = true;
+
+    const maxWaitMs = 3000;
+    const waitStart = Date.now();
+    const waitForPromptThenListen = () => {
+      if (!this.isSpeaking || Date.now() - waitStart > maxWaitMs) {
+        try {
+          this.commandRecognition.lang = this.currentLanguage;
+          this.commandRecognition.start();
+        } catch (error) {
+          console.error("Navigation shortcut listen error:", error);
+          this.isListening = false;
+          this.awaitingDestinationInput = false;
+          this.speak(
+            "Voice recognition temporarily unavailable. Please try again.",
+            true,
+          );
+        }
+      } else {
+        setTimeout(waitForPromptThenListen, 100);
+      }
+    };
+    setTimeout(waitForPromptThenListen, 150);
   }
 
   /**
@@ -1387,6 +1530,16 @@ class Netra {
       // speakers, which is what was happening before this fix.
       if (!this.volumeUpPressed) {
         this.speak("Speak your command now", true);
+        // Set this synchronously, right now - don't wait for
+        // navigation.js's utterance.onstart event to set it, since that
+        // event can lag behind the speak() call by more than our first
+        // poll interval (voice loading/init time varies). If the first
+        // check below ran before onstart had fired, it wrongly concluded
+        // "not speaking yet" and opened the mic immediately - which is
+        // exactly what let it hear its own prompt and mistake it for a
+        // command. onend will still correctly flip this back to false
+        // once the prompt actually finishes.
+        this.isSpeaking = true;
         const maxWaitMs = 3000; // safety cap
         const waitStart = Date.now();
         const waitForPromptThenListen = () => {
@@ -1465,6 +1618,7 @@ class Netra {
       this.continuousRecognition &&
       this.isListeningForWakeWord &&
       !this.isListening &&
+      !this.isSpeaking &&
       !this.continuousRecognitionRunning
     ) {
       try {
@@ -1620,7 +1774,12 @@ class Netra {
     }
 
     if (!this.isDetecting && this.stream) {
-      this.startDetection();
+      // silent=true: detection was already running before we paused it
+      // for this interaction (OCR/scene description), so there's no
+      // need to re-announce "Object detection started" every single
+      // time someone reads a sign or asks what's around them - that was
+      // spamming the exact same message after every single use.
+      this.startDetection(true);
     }
   }
 
@@ -2351,19 +2510,20 @@ class Netra {
    * Show the recognized command in UI
    */
   showRecognizedCommand(command) {
-    this.lastCommandText = command;
-
-    // Update the system status to show the command
-    this.updateStatus(`Command received: "${command}"`, "info");
-
-    // Show in dedicated command display. This is a purely cosmetic UI
-    // element - if the page structure doesn't have the elements it
-    // expects (e.g. a different template version, or elements renamed),
-    // this must NEVER be allowed to throw and block execution, since
-    // this function runs before routeVoiceCommand() in the same
-    // onresult handler - an uncaught error here silently prevented any
-    // response from ever happening, regardless of what was actually said.
+    // Wrap the ENTIRE function body, not just the DOM-manipulation part -
+    // this function must never throw, under any circumstances, because it
+    // runs before routeVoiceCommand() in the same onresult handler. An
+    // uncaught error anywhere in here silently prevents any response from
+    // ever happening, regardless of what the user actually said.
     try {
+      this.lastCommandText = command;
+
+      // Update the system status to show the command
+      this.updateStatus(`Command received: "${command}"`, "info");
+
+      // Show in dedicated command display - purely cosmetic, so any
+      // failure here is caught below and swallowed rather than blocking
+      // the rest of the response pipeline.
       let commandDisplay = document.getElementById("lastCommand");
       if (!commandDisplay) {
         const statusEl = document.getElementById("systemStatus");
@@ -2392,7 +2552,7 @@ class Netra {
       }
     } catch (error) {
       console.warn(
-        "Could not update the visual command display (non-fatal):",
+        "showRecognizedCommand failed (non-fatal, response will still be processed):",
         error,
       );
     }
@@ -2584,7 +2744,7 @@ class Netra {
   /**
    * Start object detection
    */
-  async startDetection() {
+  async startDetection(silent = false) {
     try {
       if (!this.model) {
         this.speak("AI model is not ready. Please wait.");
@@ -2634,9 +2794,16 @@ class Netra {
       this.elements.startBtn.disabled = true;
       this.elements.stopBtn.disabled = false;
 
-      this.speak(
-        "Object detection started. I will alert you about any obstacles or objects I detect.",
-      );
+      // silent=true is used when navigation restarts detection for the
+      // walk itself (see navigateToLocation()) - saying "Object
+      // detection started..." right after "Route found, starting
+      // navigation" and the first turn instruction would just be more
+      // noise stacked on top of what the user actually needs to hear.
+      if (!silent) {
+        this.speak(
+          "Object detection started. I will alert you about any obstacles or objects I detect.",
+        );
+      }
 
       // Start detection loop
       this.detectObjects();
@@ -2646,16 +2813,18 @@ class Netra {
         "Camera unavailable. Voice commands and navigation are still active.",
         "warning",
       );
-      this.speak(
-        "Camera is not available, but voice commands and navigation are ready to use.",
-      );
+      if (!silent) {
+        this.speak(
+          "Camera is not available, but voice commands and navigation are ready to use.",
+        );
+      }
     }
   }
 
   /**
    * Stop object detection
    */
-  stopDetection() {
+  stopDetection(silent = false) {
     this.isDetecting = false;
 
     // Clean up speech delay timer
@@ -2685,7 +2854,16 @@ class Netra {
     this.elements.startBtn.disabled = false;
     this.elements.stopBtn.disabled = true;
 
-    this.speak("Object detection stopped.");
+    // silent=true is used when stopDetection() is just a means to an end
+    // (e.g. the navigation shortcut stopping detection before it asks
+    // "Where would you like to go?") - speaking BOTH "Object detection
+    // stopped" AND the next prompt back-to-back caused the two
+    // utterances to collide/cancel each other unpredictably, and the
+    // gap between them was enough time for continuous listening to
+    // sneak back on and capture the destination itself.
+    if (!silent) {
+      this.speak("Object detection stopped.");
+    }
   }
 
   /**
@@ -3546,9 +3724,52 @@ class Netra {
   /* ==========================================
        OCR Capture and Read
     ========================================== */
+  /**
+   * Make sure the camera is actually streaming before a one-shot capture
+   * (Read Text / Describe Scene). Both of these used to just refuse with
+   * "please start object detection first" if the camera wasn't already
+   * on - from the person's side, pressing "Read Text" and getting told
+   * to go press a totally different button first reads as "this is
+   * broken", not as a helpful instruction. Now they request the camera
+   * themselves on demand, same as Start Detection does.
+   */
+  async ensureCameraReady() {
+    if (this.video && this.video.srcObject) return true;
+
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: "environment",
+        },
+      });
+
+      this.video.srcObject = this.stream;
+
+      await new Promise((resolve) => {
+        this.video.onloadedmetadata = () => {
+          this.video.play();
+          resolve();
+        };
+      });
+
+      this.canvas.width = this.video.videoWidth;
+      this.canvas.height = this.video.videoHeight;
+
+      return true;
+    } catch (error) {
+      console.error("Camera access failed:", error);
+      return false;
+    }
+  }
+
   async captureAndReadText() {
-    if (!this.video || !this.video.srcObject) {
-      this.speak("Please start object detection first.", true);
+    if (!(await this.ensureCameraReady())) {
+      this.speak(
+        "Camera is not available. Please check camera permissions.",
+        true,
+      );
       return;
     }
 
@@ -3654,6 +3875,56 @@ class Netra {
     } catch (error) {
       console.error(error);
       this.speak("Unable to access memory.", true);
+    }
+  }
+
+  /**
+   * "Memory" button handler - the button existed but had literally no
+   * click listener attached, so tapping it did nothing at all. This
+   * speaks a summary of what's been remembered so far, since there was
+   * no generic "show me my memory" voice command either (only "where is
+   * my X" for a specific named object, via findObjectFromMemory above).
+   */
+  async showMemorySummary() {
+    this.updateStatus("Checking memory...", "info");
+
+    try {
+      const response = await fetch("/api/memory");
+      const memories = await response.json();
+
+      if (!memories || memories.length === 0) {
+        this.speak(
+          "I haven't remembered anything yet. As I see objects, I'll keep track of where and when.",
+          true,
+        );
+        return;
+      }
+
+      // Most recently-seen first. Entries are saved with a timestamp
+      // string (see autoSaveMemory below), so this sorts newest-first
+      // without assuming any particular pre-existing order in the file.
+      const sorted = [...memories].sort(
+        (a, b) => new Date(b.time) - new Date(a.time),
+      );
+
+      const maxToRead = 5;
+      const recent = sorted.slice(0, maxToRead);
+
+      const items = recent
+        .map((m) => `your ${m.object}, last seen ${m.location}`)
+        .join("; ");
+
+      const totalNote =
+        memories.length > maxToRead
+          ? ` I have ${memories.length} memories in total - ask me "where is my" and an object name for any specific one.`
+          : "";
+
+      this.speak(`Here's what I remember: ${items}.${totalNote}`, true);
+      this.updateStatus(`${memories.length} memories`, "success");
+    } catch (error) {
+      console.error("Error fetching memory:", error);
+      this.speak("Sorry, I couldn't access memory right now.", true);
+      this.updateStatus("Memory unavailable", "warning");
     }
   }
 
@@ -3795,8 +4066,11 @@ class Netra {
   }
 
   async describeScene() {
-    if (!this.video || !this.video.srcObject) {
-      this.speak("Please start the camera first.", true);
+    if (!(await this.ensureCameraReady())) {
+      this.speak(
+        "Camera is not available. Please check camera permissions.",
+        true,
+      );
 
       return;
     }
@@ -4141,7 +4415,8 @@ class Netra {
   }
 
   /**
-   * Navigate to any worldwide destination using Google APIs
+   * Navigate to any worldwide destination using free OpenStreetMap-based
+   * geocoding and routing (Nominatim + OSRM)
    */
   async navigateToLocation(destination) {
     console.log("navigateToLocation called with:", destination);
@@ -4172,6 +4447,20 @@ class Netra {
         console.log("Using enhanced navigation system");
         window.blindMateNavigation.currentDestination = destination;
         await window.blindMateNavigation.startNavigation(destination);
+
+        // Resume real obstacle detection for the walk itself now that a
+        // route is active. The navigation shortcut turned detection off
+        // before asking for a destination, and navigation.js's own
+        // built-in obstacle detection is intentionally disabled (it
+        // duplicates this same camera/model in a broken way) - so
+        // without this, nothing would watch for obstacles at all while
+        // being guided to a destination, which defeats half the point
+        // of an assistive walking-navigation feature. silent=true since
+        // "Route found..." and the first turn instruction already just
+        // spoke - no need to also announce detection starting.
+        if (!this.isDetecting) {
+          this.startDetection(true);
+        }
       } else {
         console.log("Enhanced navigation not available, using fallback");
         // Fallback to direct API call

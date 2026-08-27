@@ -37,12 +37,13 @@ class UniversalNavigation {
       obstacleMinConfidence: 0.5, // minimum confidence to trigger alert
     };
 
-    // Google Maps integration
+    // Leaflet map integration (OpenStreetMap tiles, no API key/billing)
     this.map = null;
-    this.directionsService = null;
-    this.directionsRenderer = null;
+    this.routeLayer = null; // L.polyline for the current route
     this.userMarker = null;
-    this.googleMapsApiKey = null;
+    this.modalMap = null;
+    this.modalRouteLayer = null;
+    this.modalUserMarker = null;
 
     // Enhanced speech recognition and synthesis
     this.recognition = null;
@@ -145,8 +146,10 @@ class UniversalNavigation {
     // Load object detection model
     await this.loadModel();
 
-    // Get Google Maps API key
-    await this.getGoogleMapsApiKey();
+    // Leaflet needs no API key or async fetch - initialize the map
+    // directly (index.html also calls this once the DOM/Leaflet script
+    // is ready, this call is idempotent so either order is safe).
+    this.initializeMap();
 
     console.log("BlindMate Navigation System initialized");
 
@@ -179,68 +182,35 @@ class UniversalNavigation {
   }
 
   /**
-   * Get Google Maps API key from backend
+   * Initialize the visual map using Leaflet + OpenStreetMap tiles.
+   * Free, no API key, no billing account - this is purely a bonus
+   * visual aid for sighted companions; all voice navigation works
+   * independently of whether this succeeds.
    */
-  async getGoogleMapsApiKey() {
-    try {
-      const response = await fetch("/api/google-maps-key");
-      if (response.ok) {
-        const data = await response.json();
-        this.googleMapsApiKey = data.key;
-        console.log("Google Maps API key retrieved");
+  initializeMap() {
+    if (this.map) return; // Already initialized - idempotent
 
-        // Initialize Google Maps if key is available
-        if (window.google && window.google.maps) {
-          this.initializeGoogleMaps();
-        }
-      } else {
-        console.error("Failed to get Google Maps API key");
-      }
-    } catch (error) {
-      console.error("Error getting Google Maps API key:", error);
-    }
-  }
-
-  /**
-   * Initialize Google Maps
-   */
-  initializeGoogleMaps() {
-    if (!this.googleMapsApiKey) {
-      console.error("Google Maps API key not available");
+    if (typeof L === "undefined") {
+      console.error("Leaflet library not loaded - visual map unavailable");
       return;
     }
 
-    console.log("Google Maps JavaScript API will be used for navigation");
+    const mapContainer = document.getElementById("map");
+    if (!mapContainer) return;
 
-    // Initialize map
     const defaultCenter = this.currentPosition
-      ? {
-          lat: this.currentPosition.latitude,
-          lng: this.currentPosition.longitude,
-        }
-      : { lat: 28.6139, lng: 77.209 }; // Default to Delhi
+      ? [this.currentPosition.latitude, this.currentPosition.longitude]
+      : [28.6139, 77.209]; // Default to Delhi until GPS is available
 
-    this.map = new google.maps.Map(document.getElementById("map"), {
-      zoom: 16,
-      center: defaultCenter,
-      mapTypeId: google.maps.MapTypeId.ROADMAP,
-    });
+    this.map = L.map(mapContainer).setView(defaultCenter, 16);
 
-    this.directionsService = new google.maps.DirectionsService();
-    this.directionsRenderer = new google.maps.DirectionsRenderer({
-      map: this.map,
-      suppressMarkers: false,
-    });
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(this.map);
 
-    console.log("Google Maps initialized");
-  }
-
-  /**
-   * Initialize map (called by Google Maps API callback)
-   */
-  initializeMap() {
-    console.log("Google Maps callback triggered");
-    this.initializeGoogleMaps();
+    console.log("Leaflet map initialized");
   }
 
   /**
@@ -757,7 +727,7 @@ class UniversalNavigation {
       this.startObstacleAlertSystem();
 
       // Display route on map if available
-      if (this.map && this.directionsRenderer) {
+      if (this.map) {
         this.displayRouteOnMap();
       }
 
@@ -1098,7 +1068,7 @@ class UniversalNavigation {
 
     // Update map marker if available
     if (this.map && this.userMarker) {
-      this.userMarker.setPosition({ lat: newLat, lng: newLng });
+      this.userMarker.setLatLng([newLat, newLng]);
     }
 
     // Check if destination is reached first (highest priority)
@@ -1288,14 +1258,9 @@ class UniversalNavigation {
     this.currentPosition = newPosition;
 
     if (this.userMarker && this.map) {
-      this.userMarker.setPosition({
-        lat: newPosition.latitude,
-        lng: newPosition.longitude,
-      });
-      this.map.panTo({
-        lat: newPosition.latitude,
-        lng: newPosition.longitude,
-      });
+      const latlng = [newPosition.latitude, newPosition.longitude];
+      this.userMarker.setLatLng(latlng);
+      this.map.panTo(latlng);
     }
 
     // Check if user reached current step
@@ -1303,60 +1268,94 @@ class UniversalNavigation {
   }
 
   /**
-   * Display route on Google Maps
+   * Display route on the Leaflet map. The route (including full path
+   * geometry) was already fetched from OSRM by startNavigation() /
+   * previewRoute() - draw it directly instead of making a second
+   * network request for the same route.
    */
   displayRouteOnMap() {
-    if (!this.map || !this.directionsService || !this.currentRoute) return;
+    if (!this.map || !this.currentRoute) return;
 
     console.log("Displaying route on map");
 
     const steps = this.currentRoute.route.steps;
     if (!steps || steps.length === 0) return;
 
-    const origin = new google.maps.LatLng(
+    const origin = [
       this.currentPosition.latitude,
       this.currentPosition.longitude,
-    );
+    ];
 
-    const destination = new google.maps.LatLng(
+    // Clear any previously drawn route before drawing the new one
+    if (this.routeLayer) {
+      this.map.removeLayer(this.routeLayer);
+      this.routeLayer = null;
+    }
+
+    const overviewPath = this.currentRoute.route.overview_path;
+    const pathLatLngs =
+      overviewPath && overviewPath.length > 0
+        ? overviewPath
+        : steps.map((s) => [s.start_location.lat, s.start_location.lng]);
+
+    this.routeLayer = L.polyline(pathLatLngs, {
+      color: "#4285F4",
+      weight: 5,
+      opacity: 0.85,
+    }).addTo(this.map);
+
+    // Destination marker
+    const destination = [
       steps[steps.length - 1].end_location.lat,
       steps[steps.length - 1].end_location.lng,
-    );
+    ];
+    L.marker(destination).addTo(this.map).bindPopup("Destination");
 
-    const request = {
-      origin: origin,
-      destination: destination,
-      travelMode: google.maps.TravelMode.WALKING,
-    };
+    this.map.fitBounds(this.routeLayer.getBounds(), { padding: [30, 30] });
 
-    this.directionsService.route(request, (result, status) => {
-      if (status === google.maps.DirectionsStatus.OK) {
-        this.directionsRenderer.setDirections(result);
-
-        // Add user marker
-        if (!this.userMarker) {
-          this.userMarker = new google.maps.Marker({
-            position: origin,
-            map: this.map,
-            title: "Your Location",
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              scale: 8,
-              fillColor: "#4285F4",
-              fillOpacity: 1,
-              strokeColor: "#ffffff",
-              strokeWeight: 2,
-            },
-          });
-        }
-      }
-    });
+    // Add/update the user marker
+    if (!this.userMarker) {
+      this.userMarker = L.circleMarker(origin, {
+        radius: 8,
+        color: "#ffffff",
+        weight: 2,
+        fillColor: "#4285F4",
+        fillOpacity: 1,
+      })
+        .addTo(this.map)
+        .bindPopup("Your Location");
+    } else {
+      this.userMarker.setLatLng(origin);
+    }
   }
 
   /**
    * Start obstacle detection during navigation
    */
   startObstacleDetection() {
+    // startObstacleAlertSystem() (called moments earlier, in
+    // startNavigation()) explicitly sets obstacleAlertEnabled = false
+    // and logs that the main app (app.js) handles all object detection
+    // during navigation - but this function used to ignore that flag
+    // entirely and start its OWN separate detection loop anyway, using
+    // its own this.camera/this.model (a redundant, mostly-unused second
+    // camera+model setup, distinct from app.js's working one). Since
+    // app.js had usually already stopped the shared <video id="webcam">
+    // element's stream by this point (e.g. the navigation shortcut turns
+    // detection off before asking for a destination), this.camera ended
+    // up pointing at a video element with no active stream - a 0x0
+    // frame - which crashed the model's texture allocation on every
+    // single detection attempt, forever, every 2 seconds, for the entire
+    // walk. Respecting the flag here removes the whole broken loop;
+    // app.js's navigateToLocation() now restarts its own, working object
+    // detection for the duration of the walk instead (see there).
+    if (!this.obstacleAlertEnabled) {
+      console.log(
+        "Navigation system obstacle detection is disabled - main app handles it",
+      );
+      return;
+    }
+
     if (!this.model || !this.camera) return;
 
     this.isDetecting = true;
@@ -1420,6 +1419,10 @@ class UniversalNavigation {
     // Stop obstacle detection
     this.isDetecting = false;
 
+    // NOTE: deliberately NOT stopping the main app's camera/object
+    // detection here - the person asked for detection to keep running
+    // even after navigation ends/arrives, not just during the walk.
+
     // Hide navigation controls
     const navControls = document.getElementById("navigationControls");
     if (navControls) {
@@ -1460,6 +1463,10 @@ class UniversalNavigation {
     // Stop obstacle detection and alert system
     this.stopObstacleAlertSystem();
 
+    // NOTE: deliberately NOT stopping the main app's camera/object
+    // detection here either - same reasoning as navigationComplete()
+    // above, detection should keep running after navigation stops.
+
     // Hide navigation UI elements
     const navigationInfo = document.getElementById("navigationInfo");
     if (navigationInfo) {
@@ -1478,8 +1485,9 @@ class UniversalNavigation {
     }
 
     // Clear map route
-    if (this.directionsRenderer) {
-      this.directionsRenderer.setDirections(null);
+    if (this.map && this.routeLayer) {
+      this.map.removeLayer(this.routeLayer);
+      this.routeLayer = null;
     }
 
     // Cancel any current speech
@@ -1658,18 +1666,85 @@ class UniversalNavigation {
         this.errorStates.speechFailed = false;
 
         console.log("Speech Started");
+
+        // Mute the wake-word listener while ANY text is being spoken -
+        // not just the "Speak your command now" prompt. Without this,
+        // the microphone hears Netra's own voice (e.g. "Object detection
+        // started, I will alert you...") and continuous listening
+        // transcribes fragments of it as if the user said them. Netra's
+        // app.js instance owns the continuous recognizer, so we reach it
+        // via the global instance it exposes.
+        if (window.blindMate) {
+          // THE key fix: app.js has its own separate `isSpeaking` flag,
+          // and every "wait for Netra to stop talking before opening the
+          // mic" loop in app.js (startVoiceCommand, startNavigationShortcut)
+          // checks THAT flag, not this one. But app.js's speak() always
+          // delegates to this navigation.js instance and returns
+          // immediately - so app.js's own isSpeaking was permanently
+          // stuck at false, and those wait loops always saw "not
+          // speaking" a mere 150ms after the utterance started, then
+          // opened the microphone immediately - while Netra was still
+          // mid-sentence. That's exactly why "Where would you like to
+          // go?" got captured as the destination itself. Keeping the two
+          // flags in sync here fixes every wait-loop in app.js at once.
+          window.blindMate.isSpeaking = true;
+          if (window.blindMate.stopContinuousListening) {
+            window.blindMate.stopContinuousListening();
+          }
+        }
       };
 
       utterance.onend = () => {
         this.isSpeaking = false;
 
         console.log("Speech Finished");
+
+        if (window.blindMate) {
+          window.blindMate.isSpeaking = false;
+
+          // Resume wake-word listening now that Netra has stopped
+          // talking, as long as nothing else (an active command
+          // recognition session) needs the microphone right now.
+          if (
+            window.blindMate.startContinuousListening &&
+            !window.blindMate.isListening
+          ) {
+            window.blindMate.startContinuousListening();
+          }
+        }
       };
 
       utterance.onerror = (event) => {
+        // "canceled"/"interrupted" fire whenever a newer speak() call
+        // legitimately cuts off an older one (e.g. "Yes, how can I help
+        // you?" being cut off by "Speak your command now" a moment
+        // later) - this is expected and not a real failure, so don't run
+        // the full error-recovery path (UI fallback text, synth
+        // reinitialization) for it, just quietly reset state.
+        if (event.error === "canceled" || event.error === "interrupted") {
+          console.log(`Speech ${event.error} (expected, another utterance took over)`);
+          this.isSpeaking = false;
+          if (window.blindMate) window.blindMate.isSpeaking = false;
+          return;
+        }
+
         console.error(event);
 
         this.handleSpeechError(text);
+
+        // handleSpeechError already sets isSpeaking = false; resume
+        // wake-word listening here too so an error mid-utterance doesn't
+        // leave the assistant permanently deaf until the next manual
+        // interaction.
+        if (window.blindMate) {
+          window.blindMate.isSpeaking = false;
+          if (
+            window.blindMate.startContinuousListening &&
+            !window.blindMate.isListening
+          ) {
+            window.blindMate.startContinuousListening();
+          }
+        }
       };
 
       this.lastUtterance = utterance;
@@ -1781,53 +1856,58 @@ class UniversalNavigation {
   }
 
   /**
-   * Initialize map in modal
+   * Initialize map in modal (Leaflet)
    */
   initializeMapModal() {
     if (this.modalMap) return; // Already initialized
 
+    if (typeof L === "undefined") {
+      console.error("Leaflet library not loaded - modal map unavailable");
+      return;
+    }
+
     const mapContainer = document.getElementById("navigationMap");
     if (!mapContainer) return;
 
-    // Create map with current location
-    this.modalMap = new google.maps.Map(mapContainer, {
-      zoom: 15,
-      center: this.currentPosition
-        ? {
-            lat: this.currentPosition.latitude,
-            lng: this.currentPosition.longitude,
-          }
-        : { lat: 0, lng: 0 },
-      mapTypeId: google.maps.MapTypeId.ROADMAP,
-    });
+    const center = this.currentPosition
+      ? [this.currentPosition.latitude, this.currentPosition.longitude]
+      : [0, 0];
 
-    // Show current route
-    if (this.currentRoute) {
-      const directionsRenderer = new google.maps.DirectionsRenderer({
-        directions: { routes: [this.currentRoute] },
-        map: this.modalMap,
-        suppressMarkers: false,
-      });
+    this.modalMap = L.map(mapContainer).setView(center, 15);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(this.modalMap);
+
+    // Show current route, using the geometry already fetched from OSRM
+    if (this.currentRoute && this.currentRoute.route) {
+      const overviewPath = this.currentRoute.route.overview_path;
+      if (overviewPath && overviewPath.length > 0) {
+        this.modalRouteLayer = L.polyline(overviewPath, {
+          color: "#4285F4",
+          weight: 5,
+          opacity: 0.85,
+        }).addTo(this.modalMap);
+        this.modalMap.fitBounds(this.modalRouteLayer.getBounds(), {
+          padding: [30, 30],
+        });
+      }
     }
 
     // Show current position
     if (this.currentPosition) {
-      this.modalUserMarker = new google.maps.Marker({
-        position: {
-          lat: this.currentPosition.latitude,
-          lng: this.currentPosition.longitude,
-        },
-        map: this.modalMap,
-        title: "Your Current Location",
-        icon: {
-          url:
-            "data:image/svg+xml;charset=UTF-8," +
-            encodeURIComponent(
-              '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="8" fill="#007bff" stroke="#fff" stroke-width="2"/></svg>',
-            ),
-          scaledSize: new google.maps.Size(20, 20),
-        },
+      const userIcon = L.divIcon({
+        className: "",
+        html: '<svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="8" fill="#007bff" stroke="#fff" stroke-width="2"/></svg>',
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
       });
+      this.modalUserMarker = L.marker(
+        [this.currentPosition.latitude, this.currentPosition.longitude],
+        { icon: userIcon, title: "Your Current Location" },
+      ).addTo(this.modalMap);
     }
   }
 
