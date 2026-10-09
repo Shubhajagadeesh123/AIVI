@@ -65,14 +65,14 @@
             <div>
               <h1>AIVisualAssistant</h1>
 
-              <p>AI Companion for Visually Impaired</p>
+              <p data-i18n="companion">AI Companion for Visually Impaired</p>
             </div>
           </div>
 
           <div class="hero-status">
             <div class="status-dot"></div>
 
-            ONLINE
+            <span data-i18n="online">ONLINE</span>
           </div>
         </div>
 
@@ -104,14 +104,13 @@
               <div>
                 <h2>
                   <i class="fas fa-eye"></i>
-
-                  AI Vision
+                  <span data-i18n="visionTitle">AI Vision</span>
                 </h2>
 
-                <p>Real-time Scene Understanding</p>
+                <p data-i18n="sceneUnderstanding">Real-time Scene Understanding</p>
               </div>
 
-              <span id="detectionStatus" class="badge bg-secondary"> Inactive </span>
+              <span id="detectionStatus" class="badge bg-secondary" data-i18n="inactive"> Inactive </span>
             </div>
 
             <div class="camera-box">
@@ -122,11 +121,11 @@
               <div id="loadingOverlay" class="loading-overlay">
                 <div class="spinner-border text-info"></div>
 
-                <p class="mt-3">Loading AI Engine...</p>
+                <p class="mt-3" data-i18n="loadingAI">Loading AI Engine...</p>
               </div>
 
               <div id="detectionIndicator" class="detection-indicator" style="display: none">
-                👁 Detecting Objects
+                <span data-i18n="detectingObjects">👁 Detecting Objects</span>
               </div>
 
               <div id="navigationMapContainer" style="display: none">
@@ -142,11 +141,10 @@
             <div class="assistant-header">
               <h2>
                 <i class="fas fa-robot"></i>
-
-                AI Assistant
+                <span data-i18n="assistantTitle">AI Assistant</span>
               </h2>
 
-              <p>Choose an action or simply speak.</p>
+              <p data-i18n="chooseAction">Choose an action or simply speak.</p>
             </div>
 
             <!-- Quick Actions -->
@@ -213,7 +211,7 @@
             <!-- Language -->
 
             <div class="settings-box">
-              <h4>Language</h4>
+              <h4 data-i18n="languageLabel">Language</h4>
 
               <select id="languageSelect" class="form-select">
                 <option value="en-IN">English</option>
@@ -231,7 +229,7 @@
             <!-- Voice -->
 
             <div class="settings-box">
-              <h4>Voice Tone</h4>
+              <h4 data-i18n="voiceTone">Voice Tone</h4>
 
               <select id="toneSelect" class="form-select">
                 <option value="friendly">Friendly</option>
@@ -246,21 +244,21 @@
 
             <div class="live-status">
               <div class="status-item">
-                <h5>Detection</h5>
+                <h5 data-i18n="detectionLabel">Detection</h5>
 
-                <span id="detectionBadge"> Inactive </span>
+                <span id="detectionBadge" data-i18n="inactive"> Inactive </span>
               </div>
 
               <div class="status-item">
-                <h5>Voice</h5>
+                <h5 data-i18n="voiceLabel">Voice</h5>
 
-                <span id="voiceStatus"> Ready </span>
+                <span id="voiceStatus" data-i18n="ready"> Ready </span>
               </div>
 
               <div class="status-item">
-                <h5>Navigation</h5>
+                <h5 data-i18n="navigation">Navigation</h5>
 
-                <span id="navigationStatus"> Ready </span>
+                <span id="navigationStatus" data-i18n="ready"> Ready </span>
               </div>
             </div>
 
@@ -325,7 +323,7 @@
           <h3>
             <i class="fas fa-comments"></i>
 
-            Assistant Response
+            <span data-i18n="assistantResponse">Assistant Response</span>
           </h3>
         </div>
 
@@ -422,9 +420,9 @@
 
     <!-- Existing JS -->
 
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js', v='4') }}"></script>
 
-    <script src="{{ url_for('static', filename='js/navigation.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/navigation.js', v='4') }}"></script>
 
     <script>
       // NOTE: navigation.js already creates the one and only navigation

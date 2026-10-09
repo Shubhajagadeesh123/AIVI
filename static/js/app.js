@@ -5,8 +5,13 @@
 
 class Netra {
   constructor() {
-    this.currentLanguage =
-      localStorage.getItem("blindmate_language") || "en-IN";
+    this.hasSavedLanguagePreference = Boolean(localStorage.getItem("blindmate_language"));
+    const savedLanguage = localStorage.getItem("blindmate_language") || "en-IN";
+    const languageAliases = { en: "en-IN", hi: "hi-IN", kn: "kn-IN", ta: "ta-IN", te: "te-IN" };
+    this.currentLanguage = languageAliases[savedLanguage] ||
+      (["en-IN", "hi-IN", "kn-IN", "ta-IN", "te-IN"].includes(savedLanguage) ? savedLanguage : "en-IN");
+    localStorage.setItem("blindmate_language", this.currentLanguage);
+    this.translationCache = new Map();
     // Apply saved language to on-screen text immediately, before waiting
     // on the async server preferences fetch, to avoid a flash of English.
     if (document.readyState !== "loading") {
@@ -2177,6 +2182,21 @@ class Netra {
         home: "Home",
         history: "History",
         settings: "Settings",
+        companion: 'AI Companion for Visually Impaired',
+        online: 'ONLINE',
+        visionTitle: 'AI Vision',
+        sceneUnderstanding: 'Real-time Scene Understanding',
+        inactive: 'Inactive',
+        loadingAI: 'Loading AI Engine...',
+        detectingObjects: '👁 Detecting Objects',
+        assistantTitle: 'AI Assistant',
+        chooseAction: 'Choose an action or simply speak.',
+        languageLabel: 'Language',
+        voiceTone: 'Voice Tone',
+        detectionLabel: 'Detection',
+        voiceLabel: 'Voice',
+        ready: 'Ready',
+        assistantResponse: 'Assistant Response',
       },
       "hi-IN": {
         goodMorning: "सुप्रभात 👋",
@@ -2196,6 +2216,21 @@ class Netra {
         home: "होम",
         history: "इतिहास",
         settings: "सेटिंग्स",
+        companion: 'दृष्टिबाधित लोगों के लिए एआई सहायक',
+        online: 'ऑनलाइन',
+        visionTitle: 'एआई दृष्टि',
+        sceneUnderstanding: 'दृश्य को वास्तविक समय में समझना',
+        inactive: 'निष्क्रिय',
+        loadingAI: 'एआई इंजन लोड हो रहा है...',
+        detectingObjects: '👁 वस्तुओं की पहचान हो रही है',
+        assistantTitle: 'एआई सहायक',
+        chooseAction: 'कोई विकल्प चुनें या बोलें।',
+        languageLabel: 'भाषा',
+        voiceTone: 'आवाज़ का अंदाज़',
+        detectionLabel: 'पहचान',
+        voiceLabel: 'आवाज़',
+        ready: 'तैयार',
+        assistantResponse: 'सहायक का जवाब',
       },
       "kn-IN": {
         goodMorning: "ಶುಭೋದಯ 👋",
@@ -2215,6 +2250,21 @@ class Netra {
         home: "ಮುಖಪುಟ",
         history: "ಇತಿಹಾಸ",
         settings: "ಸಂಯೋಜನೆಗಳು",
+        companion: 'ದೃಷ್ಟಿ ಸಮಸ್ಯೆಯಿರುವವರಿಗೆ AI ಸಹಾಯಕ',
+        online: 'ಆನ್\u200cಲೈನ್',
+        visionTitle: 'AI ದೃಷ್ಟಿ',
+        sceneUnderstanding: 'ನೈಜ ಸಮಯದ ದೃಶ್ಯ ಅರಿವು',
+        inactive: 'ನಿಷ್ಕ್ರಿಯ',
+        loadingAI: 'AI ಎಂಜಿನ್ ಲೋಡ್ ಆಗುತ್ತಿದೆ...',
+        detectingObjects: '👁 ವಸ್ತುಗಳನ್ನು ಪತ್ತೆಹಚ್ಚಲಾಗುತ್ತಿದೆ',
+        assistantTitle: 'AI ಸಹಾಯಕ',
+        chooseAction: 'ಒಂದು ಆಯ್ಕೆಯನ್ನು ಆರಿಸಿ ಅಥವಾ ಮಾತನಾಡಿ.',
+        languageLabel: 'ಭಾಷೆ',
+        voiceTone: 'ಧ್ವನಿಯ ಶೈಲಿ',
+        detectionLabel: 'ಪತ್ತೆಹಚ್ಚುವಿಕೆ',
+        voiceLabel: 'ಧ್ವನಿ',
+        ready: 'ಸಿದ್ಧ',
+        assistantResponse: 'ಸಹಾಯಕನ ಪ್ರತಿಕ್ರಿಯೆ',
       },
       "ta-IN": {
         goodMorning: "காலை வணக்கம் 👋",
@@ -2234,6 +2284,21 @@ class Netra {
         home: "முகப்பு",
         history: "வரலாறு",
         settings: "அமைப்புகள்",
+        companion: 'பார்வைக் குறைபாடு உள்ளவர்களுக்கான AI உதவியாளர்',
+        online: 'இணையத்தில்',
+        visionTitle: 'AI பார்வை',
+        sceneUnderstanding: 'நிகழ்நேரக் காட்சி புரிதல்',
+        inactive: 'செயலற்றது',
+        loadingAI: 'AI இயந்திரம் ஏற்றப்படுகிறது...',
+        detectingObjects: '👁 பொருட்கள் கண்டறியப்படுகின்றன',
+        assistantTitle: 'AI உதவியாளர்',
+        chooseAction: 'ஒரு செயலைத் தேர்ந்தெடுக்கவும் அல்லது பேசவும்.',
+        languageLabel: 'மொழி',
+        voiceTone: 'குரல் நடை',
+        detectionLabel: 'கண்டறிதல்',
+        voiceLabel: 'குரல்',
+        ready: 'தயார்',
+        assistantResponse: 'உதவியாளரின் பதில்',
       },
       "te-IN": {
         goodMorning: "శుభోదయం 👋",
@@ -2253,6 +2318,21 @@ class Netra {
         home: "హోమ్",
         history: "చరిత్ర",
         settings: "సెట్టింగ్‌లు",
+        companion: 'దృష్టి లోపం ఉన్నవారి కోసం AI సహాయకుడు',
+        online: 'ఆన్\u200cలైన్',
+        visionTitle: 'AI విజన్',
+        sceneUnderstanding: 'నిజ సమయ దృశ్య అవగాహన',
+        inactive: 'నిష్క్రియం',
+        loadingAI: 'AI ఇంజిన్ లోడ్ అవుతోంది...',
+        detectingObjects: '👁 వస్తువులను గుర్తిస్తోంది',
+        assistantTitle: 'AI సహాయకుడు',
+        chooseAction: 'ఒక చర్యను ఎంచుకోండి లేదా మాట్లాడండి.',
+        languageLabel: 'భాష',
+        voiceTone: 'వాయిస్ శైలి',
+        detectionLabel: 'గుర్తింపు',
+        voiceLabel: 'వాయిస్',
+        ready: 'సిద్ధం',
+        assistantResponse: 'సహాయకుడి సమాధానం',
       },
     };
   }
@@ -2265,6 +2345,7 @@ class Netra {
    * via Gemini, not static UI translations yet.
    */
   applyUITranslations(langCode) {
+    document.documentElement.lang = (langCode || "en-IN").split("-")[0];
     const translations = this.getUITranslations();
     const strings = translations[langCode] || translations["en-IN"];
 
@@ -3656,9 +3737,15 @@ class Netra {
       cmd.includes("cancel navigation")
     ) {
       this.stopNavigation();
-    } else if (cmd.includes("language") && cmd.includes("hindi")) {
+    } else if (/(language|भाषा|ಭಾಷೆ|மொழி|భాష)/i.test(cmd) && /(hindi|हिंदी)/i.test(cmd)) {
       this.changeLanguage("hi-IN");
-    } else if (cmd.includes("language") && cmd.includes("english")) {
+    } else if (/(language|भाषा|ಭಾಷೆ|மொழி|భాష)/i.test(cmd) && /(kannada|ಕನ್ನಡ)/i.test(cmd)) {
+      this.changeLanguage("kn-IN");
+    } else if (/(language|भाषा|ಭಾಷೆ|மொழி|భాష)/i.test(cmd) && /(tamil|தமிழ்)/i.test(cmd)) {
+      this.changeLanguage("ta-IN");
+    } else if (/(language|भाषा|ಭಾಷೆ|மொழி|భాష)/i.test(cmd) && /(telugu|తెలుగు)/i.test(cmd)) {
+      this.changeLanguage("te-IN");
+    } else if (/(language|भाषा|ಭಾಷೆ|மொழி|భాష)/i.test(cmd) && /(english|ಇಂಗ್ಲಿಷ್|ஆங்கிலம்|ఆంగ్లం)/i.test(cmd)) {
       this.changeLanguage("en-IN");
     } else if (
       cmd.includes("tutorial") ||
@@ -4092,9 +4179,9 @@ class Netra {
 
       formData.append(
         "objects",
-
         JSON.stringify(this.currentPredictions),
       );
+      formData.append("language", this.currentLanguage);
 
       try {
         const response = await fetch(
@@ -4112,7 +4199,7 @@ class Netra {
         if (result.success) {
           this.currentSceneDescription = result.description;
 
-          this.speak(result.description, true);
+          this.speak(result.description, true, false, true);
         } else {
           this.speak(
             "Unable to describe the scene.",
@@ -4661,39 +4748,39 @@ class Netra {
   }
 
   async translateMessage(text) {
-    if (!text) {
-      return "";
-    }
+    if (!text) return "";
+    if (this.currentLanguage === "en-IN") return text;
 
-    if (this.currentLanguage === "en-IN") {
-      return text;
+    const cacheKey = `${this.currentLanguage}\u0000${text}`;
+    if (this.translationCache.has(cacheKey)) {
+      return this.translationCache.get(cacheKey);
     }
 
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
       const response = await fetch("/api/translate", {
         method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-        },
-
-        body: JSON.stringify({
-          text: text,
-
-          language: this.currentLanguage,
-        }),
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ text, language: this.currentLanguage }),
       });
-
+      clearTimeout(timeoutId);
       const result = await response.json();
-
-      if (result.success) {
+      if (response.ok && result.success && result.translated) {
+        this.translationCache.set(cacheKey, result.translated);
+        // Keep the cache bounded during long-running sessions.
+        if (this.translationCache.size > 250) {
+          this.translationCache.delete(this.translationCache.keys().next().value);
+        }
         return result.translated;
       }
     } catch (error) {
-      console.error(error);
+      console.warn("Translation unavailable:", error);
     }
 
-    return text;
+    // A failed translation must not be spoken with the selected Indian-language voice.
+    return null;
   }
   /**
    * Speak route overview when starting navigation
@@ -5012,7 +5099,18 @@ class Netra {
   changeLanguage(langCode) {
     console.log("Changing language to:", langCode);
 
+    const supportedLanguages = ["en-IN", "hi-IN", "kn-IN", "ta-IN", "te-IN"];
+    if (!supportedLanguages.includes(langCode)) langCode = "en-IN";
+
+    // Flush old-language speech before changing recognition and synthesis.
+    if (this.synth) this.synth.cancel();
+    if (window.blindMateNavigation) {
+      window.blindMateNavigation.speechQueue = [];
+      window.blindMateNavigation.isSpeaking = false;
+    }
+    this.isSpeaking = false;
     this.currentLanguage = langCode;
+    this.translationCache.clear();
     if (this.elements.languageSelect) {
       this.elements.languageSelect.value = langCode;
     }
@@ -5030,6 +5128,7 @@ class Netra {
 
     // Persist locally and update on server
     localStorage.setItem("blindmate_language", langCode);
+    this.hasSavedLanguagePreference = true;
     this.updateServerPreferences();
 
     this.speak(`Language changed to ${this.getLanguageName(langCode)}`);
@@ -5080,11 +5179,19 @@ class Netra {
       const preferences = await response.json();
 
       if (preferences.language) {
-        this.currentLanguage = preferences.language;
+        const aliases = { en: "en-IN", hi: "hi-IN", kn: "kn-IN", ta: "ta-IN", te: "te-IN" };
+        const serverLanguage = aliases[preferences.language] || preferences.language;
+        const selectedLanguage = this.hasSavedLanguagePreference
+          ? this.currentLanguage
+          : (["en-IN", "hi-IN", "kn-IN", "ta-IN", "te-IN"].includes(serverLanguage) ? serverLanguage : "en-IN");
+        this.currentLanguage = selectedLanguage;
+        localStorage.setItem("blindmate_language", selectedLanguage);
         if (this.elements.languageSelect) {
-          this.elements.languageSelect.value = preferences.language;
+          this.elements.languageSelect.value = selectedLanguage;
         }
-        this.applyUITranslations(preferences.language);
+        this.applyUITranslations(selectedLanguage);
+        if (this.commandRecognition) this.commandRecognition.lang = selectedLanguage;
+        if (this.continuousRecognition) this.continuousRecognition.lang = selectedLanguage;
       }
 
       if (preferences.tone) {
@@ -5190,39 +5297,30 @@ class Netra {
   /**
    * Text-to-speech function with queue management and cooldown
    */
-  async speak(text, priority = false, isObjectAnnouncement = false) {
+  async speak(text, priority = false, isObjectAnnouncement = false, alreadyLocalized = false) {
     console.log("Current Language:", this.currentLanguage);
     console.log("Original Text:", text);
     if (!this.synth || !text) {
       return;
     }
 
-    /* ==========================================
-       Translate Text
-    ========================================== */
-
+    /* Translate before speaking, but never use a mismatched system voice. */
     if (this.currentLanguage !== "en-IN") {
-      if (this.hasVoiceForLanguage(this.currentLanguage)) {
-        text = await this.translateMessage(text);
-      } else {
-        // No voice installed for this language on this device/browser -
-        // speaking translated text through the wrong voice would come out
-        // as garbled nonsense, so fall back to clear English instead of
-        // failing silently or mispronouncing.
-        console.warn(
-          `No ${this.currentLanguage} voice found on this device - speaking in English instead.`,
+      if (!this.hasVoiceForLanguage(this.currentLanguage)) {
+        this.updateStatus(
+          `${this.getLanguageName(this.currentLanguage)} speech voice is not installed. Install that language's text-to-speech voice in your device settings.`,
+          "warning",
         );
-        if (!this._warnedMissingVoiceFor) this._warnedMissingVoiceFor = {};
-        if (!this._warnedMissingVoiceFor[this.currentLanguage]) {
-          this._warnedMissingVoiceFor[this.currentLanguage] = true;
+        return;
+      }
+      if (!alreadyLocalized) {
+        text = await this.translateMessage(text);
+        if (!text) {
           this.updateStatus(
-            `${this.getLanguageName(this.currentLanguage)} voice not found on this device - using English voice instead.`,
+            "Could not translate this response. Check your internet connection and try again.",
             "warning",
           );
-          // Prepend the notice to THIS SAME utterance (rather than firing
-          // a separate speak call) so it's actually heard, instead of
-          // being immediately cut off by the main text that follows it.
-          text = `${this.getLanguageName(this.currentLanguage)} voice is not installed on this device, continuing in English. ${text}`;
+          return;
         }
       }
     }
@@ -5251,8 +5349,8 @@ class Netra {
 
       window.blindMateNavigation.speak(
         text,
-
         navPriority,
+        true, // app.js has already translated this utterance
       );
 
       return;
@@ -5376,17 +5474,19 @@ class Netra {
           );
 
           if (!voice) {
-            voice =
-              voices.find((v) => v.lang === this.currentLanguage) ||
-              voices.find((v) =>
-                v.lang.startsWith(this.currentLanguage.split("-")[0]),
-              ) ||
-              voices.find((v) => v.default);
+            voice = voices.find((v) => v.lang === this.currentLanguage) ||
+              voices.find((v) => v.lang.toLowerCase().startsWith(this.currentLanguage.split("-")[0].toLowerCase()));
           }
 
-          if (voice) {
-            utterance.voice = voice;
+          if (!voice && this.currentLanguage !== "en-IN") {
+            this.isSpeaking = false;
+            this.updateStatus(
+              `${this.getLanguageName(this.currentLanguage)} speech voice is unavailable on this device.`,
+              "warning",
+            );
+            return;
           }
+          if (voice) utterance.voice = voice;
         }
 
         utterance.onstart = () => {

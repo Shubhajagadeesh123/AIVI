@@ -36,6 +36,15 @@ CORS(app, origins=["*"])
 # Initialize Gemini service (also used for OCR/text-reading via Gemini Vision)
 gemini_service = GeminiService()
 
+# Keep language codes consistent across UI, speech recognition, translation, and AI.
+SUPPORTED_LANGUAGES = {
+    "en-IN": "English",
+    "hi-IN": "Hindi",
+    "kn-IN": "Kannada",
+    "ta-IN": "Tamil",
+    "te-IN": "Telugu",
+}
+
 
 @app.route("/")
 def index():
@@ -133,22 +142,17 @@ def translate():
     if not text:
         return jsonify({"success": False, "translated": ""})
 
-    # English doesn't need translation
+    # English doesn't need translation. Reject unknown codes instead of
+    # silently returning English inside a non-English voice session.
     if language == "en-IN":
         return jsonify({"success": True, "translated": text})
 
-    language_map = {
-        "en-IN": "English",
-        "hi-IN": "Hindi",
-        "kn-IN": "Kannada",
-        "ta-IN": "Tamil",
-        "te-IN": "Telugu",
-        "bn-IN": "Bengali",
-        "mr-IN": "Marathi",
-        "gu-IN": "Gujarati",
-    }
+    target_language = SUPPORTED_LANGUAGES.get(language)
+    if not target_language:
+        return jsonify({"success": False, "translated": "", "error": "Unsupported language"}), 400
 
-    target_language = language_map.get(language, "English")
+    if gemini_service.client is None:
+        return jsonify({"success": False, "translated": "", "error": "Translation service unavailable"}), 503
 
     prompt = f"""
 Translate this entire sentence fully into {target_language}, including any object,
@@ -177,10 +181,9 @@ Sentence:
         return jsonify({"success": True, "translated": response.text.strip()})
 
     except Exception as e:
-
-        print(e)
-
-        return jsonify({"success": False, "translated": text})
+        logging.error("Translation failed: %s", e)
+        # Never return the original English text as a successful translation.
+        return jsonify({"success": False, "translated": "", "error": "Translation failed"}), 502
 
 
 def load_json_file(path, default):
@@ -1065,46 +1068,17 @@ def clean_instruction_text(instruction):
 
 @app.route("/api/gemini/chat", methods=["POST"])
 def gemini_chat():
-
-    data = request.get_json()
-
+    data = request.get_json(silent=True) or {}
     question = data.get("question", "")
-
     scene = data.get("scene", "")
-
     objects = data.get("objects", [])
-
     language = data.get("language", "en-IN")
 
-    language_instruction = (
-        "Reply ONLY in Hindi." if language == "hi-IN" else "Reply ONLY in English."
-    )
+    if language not in SUPPORTED_LANGUAGES:
+        language = "en-IN"
 
-    prompt = f"""
-{language_instruction}
-
-You are BlindMate,
-an AI assistant for visually impaired people.
-
-Question:
-
-{question}
-
-Scene:
-
-{scene}
-
-Objects:
-
-{objects}
-
-Answer naturally.
-Keep answers short.
-"""
-
-    answer = gemini_service.answer_scene_question(prompt, scene, objects, language)
-
-    return jsonify({"success": True, "answer": answer})
+    answer = gemini_service.answer_scene_question(question, scene, objects, language)
+    return jsonify({"success": True, "answer": answer, "language": language})
 
 
 @app.route("/api/scene/describe", methods=["POST"])
@@ -1116,11 +1090,16 @@ def describe_scene():
     image = request.files["image"]
 
     objects = request.form.get("objects", "")
+    language = request.form.get("language", "en-IN")
+    if language not in SUPPORTED_LANGUAGES:
+        language = "en-IN"
+    target_language = SUPPORTED_LANGUAGES[language]
 
     image_bytes = image.read()
 
     prompt = f"""
 You are BlindMate, an AI assistant for visually impaired users.
+Respond entirely in {target_language}, using its natural script. Do not mix in English words unless they are proper names.
 
 Detected objects:
 {objects}
@@ -1144,7 +1123,7 @@ Analyze the image and describe:
             contents=[prompt, {"mime_type": "image/jpeg", "data": image_bytes}],
         )
 
-        return jsonify({"success": True, "description": response.text})
+        return jsonify({"success": True, "description": response.text.strip(), "language": language})
 
     except Exception as e:
 

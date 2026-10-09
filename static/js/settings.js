@@ -37,7 +37,7 @@ const defaultSettings = {
 
   homeAddress: "",
 
-  language: "en",
+  language: "en-IN",
 
   voiceSpeed: 1,
 
@@ -80,6 +80,14 @@ const defaultSettings = {
 
   animations: true,
 };
+
+function normalizeLanguageCode(value) {
+  const aliases = { en: "en-IN", hi: "hi-IN", kn: "kn-IN", ta: "ta-IN", te: "te-IN" };
+  const normalized = aliases[value] || value;
+  return ["en-IN", "hi-IN", "kn-IN", "ta-IN", "te-IN"].includes(normalized)
+    ? normalized
+    : "en-IN";
+}
 
 /* ==========================================
    Save Settings
@@ -135,7 +143,14 @@ async function saveSettings() {
     const result = await response.json();
 
     if (result.success) {
-      localStorage.setItem("blindmate_language", settings.language);
+      const language = normalizeLanguageCode(settings.language);
+      localStorage.setItem("blindmate_language", language);
+      // Keep the dashboard's active voice and screen language in sync.
+      await fetch("/api/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language }),
+      });
       alert("✅ Settings Saved Successfully");
     }
   } catch (error) {
@@ -160,7 +175,7 @@ async function loadSettings() {
     setValue("userPhone", settings.userPhone || "");
     setValue("homeAddress", settings.homeAddress || "");
 
-    setValue("language", settings.language || "en");
+    setValue("language", normalizeLanguageCode(settings.language || "en-IN"));
     setValue("voiceSpeed", settings.voiceSpeed || 1);
 
     setValue("wakeWord", settings.wakeWord || "Hey BlindMate");

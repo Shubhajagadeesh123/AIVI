@@ -52,6 +52,7 @@ class UniversalNavigation {
     this.isSpeaking = false;
     this.isActivelyListening = false;
     this.speechQueue = [];
+    this.translationCache = new Map();
     this.lastUtterance = null;
     this.speechCancellationTimer = null;
 
@@ -1572,39 +1573,87 @@ class UniversalNavigation {
   /**
    * Enhanced speech synthesis with smooth overlapping voice cancellation
    */
-  speak(text, priority = "normal") {
-    this.speakWithPriority(text, priority);
+  speak(text, priority = "normal", alreadyLocalized = false) {
+    this.speakWithPriority(text, priority, alreadyLocalized);
   }
 
-  /**
-   * Speak with priority and overlapping voice management
-   */
-  speakWithPriority(text, priority = "normal") {
-    console.log(`Speaking (${priority}): ${text}`);
+  /** Translate direct navigation prompts too, then serialize all speech. */
+  async speakWithPriority(text, priority = "normal", alreadyLocalized = false) {
+    if (!text || !this.speechSynthesis) return;
+    const language = localStorage.getItem("blindmate_language") || "en-IN";
 
     try {
-      // Cancel any pending speech cancellation
-      if (this.speechCancellationTimer) {
-        clearTimeout(this.speechCancellationTimer);
-        this.speechCancellationTimer = null;
+      if (language !== "en-IN" && !alreadyLocalized) {
+        this.translationCache = this.translationCache || new Map();
+        const key = `${language}\u0000${text}`;
+        if (this.translationCache.has(key)) {
+          text = this.translationCache.get(key);
+        } else {
+          const response = await fetch("/api/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text, language }),
+          });
+          const result = await response.json();
+          if (!response.ok || !result.success || !result.translated) {
+            console.warn("Navigation prompt translation failed; not speaking mixed-language text.");
+            return;
+          }
+          text = result.translated;
+          this.translationCache.set(key, text);
+          if (this.translationCache.size > 250) {
+            this.translationCache.delete(this.translationCache.keys().next().value);
+          }
+        }
       }
 
-      // Always cancel current speech before speaking new text
-      // This prevents overlapping voices and ensures clear communication
-      if (this.speechSynthesis.speaking || this.speechSynthesis.pending) {
+      if (language !== "en-IN") {
+        const prefix = language.split("-")[0].toLowerCase();
+        const matchingVoice = this.speechSynthesis.getVoices().some(
+          (voice) => voice.lang.toLowerCase() === language.toLowerCase() || voice.lang.toLowerCase().startsWith(prefix),
+        );
+        if (!matchingVoice) {
+          const status = document.getElementById("systemStatus");
+          if (status) {
+            status.textContent = `Install the ${language} text-to-speech voice in your device settings.`;
+            status.className = "alert alert-warning";
+          }
+          return;
+        }
+      }
+
+      const isHighPriority = priority === "high" || priority === true;
+      if (isHighPriority) {
+        this.speechQueue = [];
+        if (this.speechCancellationTimer) {
+          clearTimeout(this.speechCancellationTimer);
+          this.speechCancellationTimer = null;
+        }
         this.speechSynthesis.cancel();
-
-        // Small delay to ensure cancellation completes
-        setTimeout(() => {
-          this.performSpeech(text, priority);
-        }, 100);
-      } else {
-        this.performSpeech(text, priority);
+        this.isSpeaking = false;
+        this.speechCancellationTimer = setTimeout(() => {
+          this.speechCancellationTimer = null;
+          this.performSpeech(text, "high");
+        }, 60);
+        return;
       }
+
+      // Queue normal prompts rather than cancelling the sentence already playing.
+      if (this.speechQueue.length < 8 && this.speechQueue[this.speechQueue.length - 1]?.text !== text) {
+        this.speechQueue.push({ text, priority });
+      }
+      this.processSpeechQueue();
     } catch (error) {
       console.error("Speech synthesis error:", error);
       this.handleSpeechError(text);
     }
+  }
+
+  processSpeechQueue() {
+    if (this.isSpeaking || this.speechSynthesis.speaking || !this.speechQueue.length) return;
+    const next = this.speechQueue.shift();
+    const item = typeof next === "string" ? { text: next, priority: "normal" } : next;
+    this.performSpeech(item.text, item.priority);
   }
 
   /**
@@ -1643,13 +1692,16 @@ class UniversalNavigation {
 
       if (!selectedVoice) {
         selectedVoice = voices.find((voice) =>
-          voice.lang.startsWith(currentLanguage.split("-")[0]),
+          voice.lang.toLowerCase().startsWith(currentLanguage.split("-")[0].toLowerCase()),
         );
       }
 
+      if (!selectedVoice && currentLanguage !== "en-IN") {
+        this.isSpeaking = false;
+        return;
+      }
       if (selectedVoice) {
         utterance.voice = selectedVoice;
-
         console.log("Using Voice:", selectedVoice.name);
       }
 
@@ -1699,12 +1751,11 @@ class UniversalNavigation {
 
         console.log("Speech Finished");
 
-        if (window.blindMate) {
+        const hasQueuedSpeech = this.speechQueue.length > 0;
+        if (hasQueuedSpeech) {
+          setTimeout(() => this.processSpeechQueue(), 80);
+        } else if (window.blindMate) {
           window.blindMate.isSpeaking = false;
-
-          // Resume wake-word listening now that Netra has stopped
-          // talking, as long as nothing else (an active command
-          // recognition session) needs the microphone right now.
           if (
             window.blindMate.startContinuousListening &&
             !window.blindMate.isListening

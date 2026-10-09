@@ -118,7 +118,7 @@ function setupLanguageSelection() {
       btn.classList.add("selected");
 
       setupData.language = btn.dataset.lang;
-
+      localStorage.setItem("blindmate_language", setupData.language);
       speak("Language selected");
     });
   });
@@ -128,13 +128,51 @@ function setupLanguageSelection() {
 // Text To Speech
 // ----------------------------
 
-function speak(text) {
+const onboardingTranslationCache = new Map();
+let onboardingSpeechRequest = 0;
+
+async function speak(text) {
+  const requestId = ++onboardingSpeechRequest;
+  const language = setupData.language || "en-IN";
+  let spokenText = text;
+
+  if (language !== "en-IN") {
+    const cacheKey = `${language}\u0000${text}`;
+    if (onboardingTranslationCache.has(cacheKey)) {
+      spokenText = onboardingTranslationCache.get(cacheKey);
+    } else {
+      try {
+        const response = await fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, language }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success || !result.translated) return;
+        spokenText = result.translated;
+        onboardingTranslationCache.set(cacheKey, spokenText);
+      } catch (error) {
+        console.warn("Could not translate onboarding voice:", error);
+        return;
+      }
+    }
+  }
+
+  if (requestId !== onboardingSpeechRequest) return;
+  const voices = speechSynthesis.getVoices();
+  const prefix = language.split("-")[0].toLowerCase();
+  const voice = voices.find((item) => item.lang.toLowerCase() === language.toLowerCase()) ||
+    voices.find((item) => item.lang.toLowerCase().startsWith(prefix));
+  if (language !== "en-IN" && !voice) {
+    console.warn(`Install the ${language} text-to-speech voice on this device.`);
+    return;
+  }
+
   speechSynthesis.cancel();
-
-  const msg = new SpeechSynthesisUtterance(text);
-
-  msg.lang = setupData.language;
-
+  const msg = new SpeechSynthesisUtterance(spokenText);
+  msg.lang = language;
+  if (voice) msg.voice = voice;
+  msg.rate = 0.95;
   speechSynthesis.speak(msg);
 }
 
@@ -318,6 +356,7 @@ function finishSetup() {
 
   // Save everything
   localStorage.setItem("AIVisualAssistantSetup", JSON.stringify(setupData));
+  localStorage.setItem("blindmate_language", setupData.language || "en-IN");
 
   speak("Setup completed successfully.");
 
