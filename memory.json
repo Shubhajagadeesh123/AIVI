@@ -200,16 +200,6 @@
         "language": "en-IN"
     },
     {
-        "object": "umbrella",
-        "location": "on your right, 1 meter away",
-        "position": "on your right",
-        "distance": "1 meter away",
-        "scene": "Nearby objects include umbrella on your right, 1 meter away. Please move carefully.",
-        "time": "8/26/2026, 12:05:18 PM",
-        "timestamp": 1787726118331,
-        "language": "en-IN"
-    },
-    {
         "object": "remote",
         "location": "ahead of you, 1 meter away",
         "position": "ahead of you",
@@ -240,16 +230,6 @@
         "language": "en-IN"
     },
     {
-        "object": "tv",
-        "location": "ahead of you, 1 meter away",
-        "position": "ahead of you",
-        "distance": "1 meter away",
-        "scene": "I can see person on your right, very close. Nearby objects include laptop ahead of you, very close, tv ahead of you, 1 meter away. Please move carefully.",
-        "time": "8/27/2026, 11:37:21 AM",
-        "timestamp": 1787810841999,
-        "language": "en-IN"
-    },
-    {
         "object": "bird",
         "location": "ahead of you, far away",
         "position": "ahead of you",
@@ -270,13 +250,33 @@
         "language": "en-IN"
     },
     {
+        "object": "tv",
+        "location": "ahead of you, very close",
+        "position": "ahead of you",
+        "distance": "very close",
+        "scene": "I can see person on your right, very close. Nearby objects include tv ahead of you, very close. Please move carefully.",
+        "time": "10/9/2026, 11:31:15 AM",
+        "timestamp": 1791525675747,
+        "language": "en-IN"
+    },
+    {
+        "object": "umbrella",
+        "location": "ahead of you, very close",
+        "position": "ahead of you",
+        "distance": "very close",
+        "scene": "I can see person ahead of you, very close. Nearby objects include umbrella ahead of you, very close. Please move carefully.",
+        "time": "10/9/2026, 11:31:47 AM",
+        "timestamp": 1791525707879,
+        "language": "en-IN"
+    },
+    {
         "object": "person",
         "location": "ahead of you, 1 meter away",
         "position": "ahead of you",
         "distance": "1 meter away",
-        "scene": "I can see person ahead of you, 1 meter away. Please move carefully.",
-        "time": "8/27/2026, 11:56:05 AM",
-        "timestamp": 1787811965633,
+        "scene": "I can see person ahead of you, very close, person ahead of you, 1 meter away. Please move carefully.",
+        "time": "10/9/2026, 11:37:35 AM",
+        "timestamp": 1791526055538,
         "language": "en-IN"
     }
 ]

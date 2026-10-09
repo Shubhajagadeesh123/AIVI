@@ -470,11 +470,19 @@ Respond only with valid JSON, no extra text."""
     def _extract_language(self, command: str) -> str:
         """Extract language from language change command"""
         language_map = {
+            "hindi": "hi-IN",
+            "हिंदी": "hi-IN",
+            "tamil": "ta-IN",
+            "தமிழ்": "ta-IN",
+            "telugu": "te-IN",
+            "తెలుగు": "te-IN",
+            "bengali": "bn-IN",
+            "বাংলা": "bn-IN",
+            "marathi": "mr-IN",
+            "मराठी": "mr-IN",
+            "gujarati": "gu-IN",
+            "ગુજરાતી": "gu-IN",
             "english": "en-IN",
-            "hindi": "hi-IN", "हिंदी": "hi-IN",
-            "kannada": "kn-IN", "ಕನ್ನಡ": "kn-IN",
-            "tamil": "ta-IN", "தமிழ்": "ta-IN",
-            "telugu": "te-IN", "తెలుగు": "te-IN",
         }
 
         command_lower = command.lower()
@@ -509,44 +517,51 @@ Respond only with valid JSON, no extra text."""
         return None  # No tone detected
 
     def answer_scene_question(self, question, scene, objects, language="en-IN"):
-        language_names = {
-            "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada",
-            "ta-IN": "Tamil", "te-IN": "Telugu",
-        }
-        fallback_messages = {
-            "en-IN": "The assistant service is unavailable right now.",
-            "hi-IN": "सहायक सेवा अभी उपलब्ध नहीं है।",
-            "kn-IN": "ಸಹಾಯಕ ಸೇವೆ ಈಗ ಲಭ್ಯವಿಲ್ಲ.",
-            "ta-IN": "உதவி சேவை இப்போது கிடைக்கவில்லை.",
-            "te-IN": "సహాయక సేవ ప్రస్తుతం అందుబాటులో లేదు.",
-        }
+
         if not self.client:
-            return fallback_messages.get(language, fallback_messages["en-IN"])
+            return "Gemini is unavailable."
 
         try:
-            language_name = language_names.get(language, "English")
+            language_names = {
+                "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada",
+                "ta-IN": "Tamil", "te-IN": "Telugu",
+            }
+            target_language = language_names.get(language, "English")
             prompt = f"""
-You are BlindMate, a concise AI assistant for a visually impaired person.
-Reply entirely in {language_name}, using natural {language_name} script. Do not mix English into the reply except for proper names.
+You are BlindMate, an AI assistant for visually impaired users.
 
-Current scene: {scene}
-Detected objects: {objects}
-User question: {question}
+MANDATORY LANGUAGE RULE: Reply entirely in {target_language}, using its natural script.
+Translate common object names and directions. Do not mix English into the response,
+except for proper names or unavoidable product names. Keep the response concise.
+
+Current Scene:
+{scene}
+
+Detected Objects:
+{objects}
+
+User Question:
+{question}
 
 Rules:
-- Keep the answer under 45 words for fast voice playback.
-- Prioritize immediate safety and mention nearby obstacles first.
-- Do not invent details that are not present in the scene.
-- Use clear, natural spoken language.
-Return only the answer, with no heading or explanation.
+- Answer in less than 60 words.
+- Prioritize safety.
+- If an obstacle is ahead, warn the user.
+- Reply entirely in {target_language}, not merely in the language code {language}.
+- Speak naturally like a human assistant.
 """
+
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash", contents=prompt
             )
-            return response.text.strip() if response.text else fallback_messages.get(language, fallback_messages["en-IN"])
+
+            return response.text.strip()
+
         except Exception as e:
-            logging.error("Scene question failed: %s", e)
-            return fallback_messages.get(language, fallback_messages["en-IN"])
+
+            logging.error(e)
+
+            return "Sorry, I couldn't answer your question."
 
     def describe_scene(self, objects):
 
