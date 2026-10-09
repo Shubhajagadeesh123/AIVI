@@ -1,9 +1,9 @@
 /**
- * Netra - AI Assistant for Visually Impaired Users
+ * BlindMate - AI Assistant for Visually Impaired Users
  * Main Application JavaScript
  */
 
-class Netra {
+class BlindMate {
   constructor() {
     this.currentLanguage =
       localStorage.getItem("blindmate_language") || "en-IN";
@@ -171,7 +171,7 @@ class Netra {
 
     // Wake word detection
     this.isListeningForWakeWord = true;
-    this.wakeWords = ["hey netra", "netra"];
+    this.wakeWords = ["hey blindmate", "blindmate"];
     this.continuousRecognition = null;
     // Tracks whether continuousRecognition.start() has actually fired
     // (only set to true in onstart, false in onend/onerror). This is the
@@ -453,7 +453,7 @@ class Netra {
   async init() {
     this.loadSettings();
     try {
-      this.updateStatus("Initializing Netra...", "info");
+      this.updateStatus("Initializing BlindMate...", "info");
 
       // Load user preferences and check if this is a first-time user
       await this.loadServerPreferences();
@@ -966,7 +966,7 @@ class Netra {
       });
     }
 
-    // The big central microphone button (under "Tap or Say 'Hey Netra'")
+    // The big central microphone button (under "Tap or Say 'Hey BlindMate'")
     // previously had no click handler at all, despite being the most
     // prominent mic icon on the page and the one the on-screen text
     // explicitly tells the user to tap - tapping it did nothing.
@@ -1287,7 +1287,7 @@ class Netra {
       // Only show completion message if we're not in an error state
       if (!this.updateStatus.lastWasError) {
         this.updateStatus(
-          'Ready for voice commands. Say "Hey Netra", or long-press anywhere to toggle detection.',
+          'Ready for voice commands. Say "Hey BlindMate", or long-press anywhere to toggle detection.',
           "success",
         );
       }
@@ -1358,12 +1358,12 @@ class Netra {
       this.continuousRecognitionRunning = false;
       if (event.error !== "aborted") {
         // Restart continuous listening after a short delay - but only if
-        // Netra isn't actively speaking right now. Without the isSpeaking
+        // BlindMate isn't actively speaking right now. Without the isSpeaking
         // check, this restart could fire in the middle of a long TTS
         // utterance (a "no-speech" error is common right after
         // stopContinuousListening() is called for exactly that reason),
         // reopening the mic mid-sentence and causing it to transcribe
-        // Netra's own voice as if the user had said it.
+        // BlindMate's own voice as if the user had said it.
         setTimeout(() => {
           if (this.isListeningForWakeWord && !this.isSpeaking) {
             this.startContinuousListening();
@@ -1476,10 +1476,10 @@ class Netra {
       return;
     }
 
-    // Immediately stop any speech Netra is currently in the middle of -
+    // Immediately stop any speech BlindMate is currently in the middle of -
     // if the user is signaling they want to talk, that takes priority
     // over finishing a sentence. This also matters for recognition
-    // accuracy: without this, Netra's own voice could still be playing
+    // accuracy: without this, BlindMate's own voice could still be playing
     // while the microphone starts listening, and that audio bleeding
     // into the mic degrades how clearly it hears the user.
     speechSynthesis.cancel();
@@ -1487,7 +1487,7 @@ class Netra {
 
     // Pause object detection while listening/responding, so its
     // announcements don't compete with the user's own speech or with
-    // Netra's response.
+    // BlindMate's response.
     this.pauseDetectionForInteraction();
 
     try {
@@ -1665,13 +1665,13 @@ class Netra {
    * Handle wake word detection
    */
   handleWakeWordDetected(commandAfterWake = null) {
-    console.log('Wake word "Hey Netra" detected!');
+    console.log('Wake word "Hey BlindMate" detected!');
     this.updateStatus(
       "🎤 Wake word detected! Listening for command...",
       "success",
     );
 
-    // Immediately stop any speech Netra is currently in the middle of -
+    // Immediately stop any speech BlindMate is currently in the middle of -
     // hearing the wake word means the user wants to talk now, which
     // takes priority over finishing whatever was being said.
     speechSynthesis.cancel();
@@ -1679,7 +1679,7 @@ class Netra {
 
     // Pause object detection while listening/responding, so its
     // announcements don't compete with the user's own speech or with
-    // Netra's response. Idempotent - the nested startVoiceCommand() call
+    // BlindMate's response. Idempotent - the nested startVoiceCommand() call
     // below (for the no-command-yet case) will safely no-op its own
     // pause call.
     this.pauseDetectionForInteraction();
@@ -1740,7 +1740,7 @@ class Netra {
    */
   /**
    * Pause object detection for a voice interaction or text-reading, so its
-   * announcements don't talk over the user speaking or over Netra's own
+   * announcements don't talk over the user speaking or over BlindMate's own
    * response. Idempotent - safe to call from multiple entry points (e.g.
    * both the wake-word handler and startVoiceCommand, when the wake word
    * flow calls into startVoiceCommand internally) without losing track of
@@ -1759,7 +1759,7 @@ class Netra {
    * Resume object detection after a voice interaction or text-reading
    * completes. Waits for any in-progress speech to actually finish first
    * (not just for the action to be dispatched) so a newly-resumed
-   * detection announcement can't interrupt Netra's own response mid-
+   * detection announcement can't interrupt BlindMate's own response mid-
    * sentence - speak(..., priority=true) calls speechSynthesis.cancel(),
    * which would otherwise risk cutting off the response.
    */
@@ -1812,7 +1812,7 @@ class Netra {
         );
         this.stopVoiceCommand();
         this.updateStatus(
-          'Ready for voice commands. Say "Hey Netra", or long-press anywhere to toggle detection.',
+          'Ready for voice commands. Say "Hey BlindMate", or long-press anywhere to toggle detection.',
           "info",
         );
       }
@@ -2637,14 +2637,14 @@ class Netra {
    */
   startVoiceInteraction() {
     const greeting =
-      'Hello! I am Netra. Object detection is starting now. Say "Hey Netra" anytime for voice commands, or long-press anywhere on the screen to stop or start detection.';
+      'Hello! I am BlindMate. Object detection is starting now. Say "Hey BlindMate" anytime for voice commands, or long-press anywhere on the screen to stop or start detection.';
     this.speak(greeting, true); // High priority
 
     // Start continuous listening for the wake word immediately - no
     // waiting for the greeting to finish first.
     this.startContinuousListening();
     this.updateStatus(
-      '👂 Always listening for "Hey Netra" or Volume Up key',
+      '👂 Always listening for "Hey BlindMate" or Volume Up key',
       "info",
     );
   }
@@ -2736,7 +2736,7 @@ class Netra {
   finalizeSetup() {
     setTimeout(() => {
       this.speak(
-        'Setup complete. Say "Hey Netra" followed by your command to interact with me.',
+        'Setup complete. Say "Hey BlindMate" followed by your command to interact with me.',
         true,
       );
       this.startContinuousListening();
@@ -3483,7 +3483,7 @@ class Netra {
   /**
    * After the AI answers a voice command, automatically reopen the
    * microphone for a follow-up question - the user doesn't need to repeat
-   * "Hey Netra" for every single question in a row. If nothing is said,
+   * "Hey BlindMate" for every single question in a row. If nothing is said,
    * it falls back to wake-word-only listening automatically (no change
    * needed there - the existing commandRecognition.onend handler already
    * does that).
@@ -3527,7 +3527,7 @@ class Netra {
     if (isEmptyCommand) {
       console.log("Filtering out meaningless command:", command);
       this.updateStatus(
-        'Ready for voice commands. Say "Hey Netra", or long-press anywhere to toggle detection.',
+        'Ready for voice commands. Say "Hey BlindMate", or long-press anywhere to toggle detection.',
         "info",
       );
       return;
@@ -3669,7 +3669,7 @@ class Netra {
       cmd.includes("learn")
     ) {
       this.speak(
-        "Starting Netra tutorial. This will help you learn all the features.",
+        "Starting BlindMate tutorial. This will help you learn all the features.",
         true,
       );
       setTimeout(() => {
@@ -4152,7 +4152,7 @@ class Netra {
       case "silent":
         // Do nothing for meaningless commands - prevents false error messages
         this.updateStatus(
-          'Ready for voice commands. Say "Hey Netra", or long-press anywhere to toggle detection.',
+          'Ready for voice commands. Say "Hey BlindMate", or long-press anywhere to toggle detection.',
           "info",
         );
         return;
@@ -5469,7 +5469,7 @@ class Netra {
       // Wait a moment for the interface to load, then offer tutorial
       setTimeout(() => {
         this.speak(
-          'Welcome to Netra! This is your first time using the app. Would you like to start with a guided tutorial to learn all the features? You can also access the tutorial anytime by saying "start tutorial" or clicking the tutorial button.',
+          'Welcome to BlindMate! This is your first time using the app. Would you like to start with a guided tutorial to learn all the features? You can also access the tutorial anytime by saying "start tutorial" or clicking the tutorial button.',
         );
 
         // Show tutorial button prominently
@@ -5510,7 +5510,7 @@ class Netra {
 
 // Initialize the application when the page loads
 document.addEventListener("DOMContentLoaded", () => {
-  window.blindMate = new Netra();
+  window.blindMate = new BlindMate();
 });
 
 // Handle page visibility changes to pause/resume detection

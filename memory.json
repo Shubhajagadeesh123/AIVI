@@ -271,12 +271,12 @@
     },
     {
         "object": "person",
-        "location": "ahead of you, 1 meter away",
+        "location": "ahead of you, very close",
         "position": "ahead of you",
-        "distance": "1 meter away",
-        "scene": "I can see person ahead of you, very close, person ahead of you, 1 meter away. Please move carefully.",
-        "time": "10/9/2026, 11:37:35 AM",
-        "timestamp": 1791526055538,
+        "distance": "very close",
+        "scene": "I can see person ahead of you, very close. Please move carefully.",
+        "time": "10/9/2026, 12:06:37 PM",
+        "timestamp": 1791527797128,
         "language": "en-IN"
     }
 ]
