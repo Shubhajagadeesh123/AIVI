@@ -303,6 +303,13 @@ Respond only with valid JSON, no extra text."""
             "start_detection",
             "stop_detection",
             "navigate",
+            "preview_route",
+            "stop_navigation",
+            "show_map",
+            "emergency_stop",
+            "test_voice",
+            "toggle_obstacle_alerts",
+            "save_location",
             "enable_location",
             "change_language",
             "change_tone",
@@ -524,7 +531,8 @@ Respond only with valid JSON, no extra text."""
         try:
             language_names = {
                 "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada",
-                "ta-IN": "Tamil", "te-IN": "Telugu",
+                "ta-IN": "Tamil", "te-IN": "Telugu", "bn-IN": "Bengali",
+                "mr-IN": "Marathi", "gu-IN": "Gujarati",
             }
             target_language = language_names.get(language, "English")
             prompt = f"""

@@ -23,3 +23,5 @@ Thumbs.db
 
 memory.json
 user_settings.json
+user_data/
+places.json

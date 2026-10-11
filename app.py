@@ -15,7 +15,10 @@ load_dotenv()
 
 from flask import Flask, request, jsonify, render_template, session, send_from_directory
 from flask_cors import CORS
+from google.genai import types
 from gemini_service import GeminiService
+import uuid
+from flask import g
 
 log_level = (
     logging.DEBUG if os.environ.get("FLASK_ENV") == "development" else logging.INFO
@@ -28,7 +31,12 @@ logging.basicConfig(
 
 # Create Flask app with proper template and static folders
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = os.environ.get("SESSION_SECRET", "blindmate-secret-key-2024")
+_secret = os.environ.get("SESSION_SECRET")
+if not _secret:
+    logging.warning("SESSION_SECRET not set - using a random per-process key. "
+                    "Set SESSION_SECRET on Render so sessions survive restarts.")
+    _secret = uuid.uuid4().hex
+app.secret_key = _secret
 
 # Enable CORS for frontend communication
 CORS(app, origins=["*"])
@@ -63,8 +71,53 @@ def service_worker():
     return response
 
 
-# Static files are now served automatically by Flask from /static folder
-SETTINGS_FILE = "user_settings.json"
+# ---------------------------------------------------------------------------
+# Per-device storage. Settings (name, phone, emergency contacts, home address),
+# remembered objects and saved places used to live in ONE shared file, so every
+# visitor of the public site saw - and could overwrite - the same private data.
+# Each browser now gets a random anonymous id cookie and its own folder.
+# ---------------------------------------------------------------------------
+DATA_DIR = os.environ.get("DATA_DIR", "user_data")
+CID_COOKIE = "bm_cid"
+_CID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+@app.before_request
+def assign_client_id():
+    cid = request.cookies.get(CID_COOKIE, "")
+    g.new_cid = False
+    if not _CID_RE.match(cid):
+        cid = uuid.uuid4().hex
+        g.new_cid = True
+    g.cid = cid
+
+
+@app.after_request
+def persist_client_id(response):
+    if getattr(g, "new_cid", False):
+        response.set_cookie(
+            CID_COOKIE, g.cid, max_age=60 * 60 * 24 * 365,
+            httponly=True, samesite="Lax", secure=request.is_secure,
+        )
+    return response
+
+
+def user_file(name):
+    """Path of a data file belonging to the current device."""
+    folder = os.path.join(DATA_DIR, g.cid)
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, name)
+
+
+def write_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+LANGUAGE_NAMES = {
+    "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada", "ta-IN": "Tamil",
+    "te-IN": "Telugu", "bn-IN": "Bengali", "mr-IN": "Marathi", "gu-IN": "Gujarati",
+}
 
 
 @app.route("/api/ocr", methods=["POST"])
@@ -83,6 +136,7 @@ def read_ocr():
 
     image = request.files["image"]
     image_bytes = image.read()
+    mime = image.mimetype if (image.mimetype or "").startswith("image/") else "image/jpeg"
 
     ocr_prompt = """You are helping a blind user read printed or handwritten text out loud.
 
@@ -101,7 +155,7 @@ Rules:
     try:
         response = gemini_service.client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[ocr_prompt, {"mime_type": "image/jpeg", "data": image_bytes}],
+            contents=[ocr_prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime)],
         )
 
         text = response.text.strip() if response.text else ""
@@ -118,13 +172,12 @@ Rules:
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-MEMORY_FILE = "memory.json"
 
 
 @app.route("/api/translate", methods=["POST"])
 def translate():
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
     text = data.get("text", "")
 
@@ -133,22 +186,14 @@ def translate():
     if not text:
         return jsonify({"success": False, "translated": ""})
 
+    if gemini_service.client is None:
+        return jsonify({"success": False, "translated": text})
+
     # English doesn't need translation
     if language == "en-IN":
         return jsonify({"success": True, "translated": text})
 
-    language_map = {
-        "en-IN": "English",
-        "hi-IN": "Hindi",
-        "kn-IN": "Kannada",
-        "ta-IN": "Tamil",
-        "te-IN": "Telugu",
-        "bn-IN": "Bengali",
-        "mr-IN": "Marathi",
-        "gu-IN": "Gujarati",
-    }
-
-    target_language = language_map.get(language, "English")
+    target_language = LANGUAGE_NAMES.get(language, "English")
 
     prompt = f"""
 Translate this entire sentence fully into {target_language}, including any object,
@@ -192,7 +237,7 @@ def load_json_file(path, default):
     if not os.path.exists(path):
         return default
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             content = f.read().strip()
             if not content:
                 return default
@@ -210,7 +255,8 @@ def save_memory():
     and, importantly, makes "last seen" queries actually return the most
     recent sighting instead of the oldest one ever recorded.
     """
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    MEMORY_FILE = user_file("memory.json")
 
     memories = load_json_file(MEMORY_FILE, [])
 
@@ -222,18 +268,16 @@ def save_memory():
     ]
     memories.append(data)
 
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(memories, f, indent=4)
+    write_json(MEMORY_FILE, memories[-200:])
 
     return jsonify({"success": True})
 
 
 @app.route("/api/memory")
 def get_memory():
-    return jsonify(load_json_file(MEMORY_FILE, []))
+    return jsonify(load_json_file(user_file("memory.json"), []))
 
 
-PLACES_FILE = "places.json"
 
 
 @app.route("/api/memory/place/save", methods=["POST"])
@@ -243,7 +287,8 @@ def save_place():
     user's current GPS coordinates, so it can be recalled later with
     "where is the bathroom" / "take me to the bathroom".
     """
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    PLACES_FILE = user_file("places.json")
 
     name = (data.get("name") or "").strip()
     latitude = data.get("latitude")
@@ -267,29 +312,29 @@ def save_place():
         }
     )
 
-    with open(PLACES_FILE, "w") as f:
-        json.dump(places, f, indent=4)
+    write_json(PLACES_FILE, places)
 
     return jsonify({"success": True})
 
 
 @app.route("/api/memory/places")
 def get_places():
-    return jsonify(load_json_file(PLACES_FILE, []))
+    return jsonify(load_json_file(user_file("places.json"), []))
 
 
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
-    return jsonify(load_json_file(SETTINGS_FILE, {}))
+    return jsonify(load_json_file(user_file("user_settings.json"), {}))
 
 
 @app.route("/api/settings", methods=["POST"])
 def save_settings():
 
-    data = request.json
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "Invalid settings."}), 400
 
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    write_json(user_file("user_settings.json"), data)
 
     return jsonify({"success": True, "message": "Settings saved successfully."})
 
@@ -596,7 +641,7 @@ def send_emergency_sms(to_phone, message):
 @app.route("/api/emergency", methods=["POST"])
 def emergency():
 
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     latitude = data.get("latitude")
     longitude = data.get("longitude")
     contacts = data.get("contacts", [])
@@ -1066,50 +1111,17 @@ def clean_instruction_text(instruction):
 @app.route("/api/gemini/chat", methods=["POST"])
 def gemini_chat():
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
     question = data.get("question", "")
-
     scene = data.get("scene", "")
-
     objects = data.get("objects", [])
-
     language = data.get("language", "en-IN")
 
-    language_names = {
-        "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada",
-        "ta-IN": "Tamil", "te-IN": "Telugu",
-    }
-    target_language = language_names.get(language, "English")
-    language_instruction = (
-        f"Reply ONLY in {target_language}. Use its natural script. "
-        "Translate common object names and directions too; do not mix English "
-        "unless a proper noun or unavoidable product name is needed."
-    )
+    if not question.strip():
+        return jsonify({"success": False, "answer": ""}), 400
 
-    prompt = f"""
-{language_instruction}
-
-You are BlindMate,
-an AI assistant for visually impaired people.
-
-Question:
-
-{question}
-
-Scene:
-
-{scene}
-
-Objects:
-
-{objects}
-
-Answer naturally.
-Keep answers short.
-"""
-
-    answer = gemini_service.answer_scene_question(prompt, scene, objects, language)
+    answer = gemini_service.answer_scene_question(question, scene, objects, language)
 
     return jsonify({"success": True, "answer": answer})
 
@@ -1120,11 +1132,15 @@ def describe_scene():
     if "image" not in request.files:
         return jsonify({"success": False, "message": "No image received."})
 
+    if gemini_service.client is None:
+        return jsonify({"success": False, "description": "Scene description is unavailable. The AI service is not configured."})
+
     image = request.files["image"]
 
     objects = request.form.get("objects", "")
 
     image_bytes = image.read()
+    mime = image.mimetype if (image.mimetype or "").startswith("image/") else "image/jpeg"
 
     prompt = f"""
 You are BlindMate, an AI assistant for visually impaired users.
@@ -1148,7 +1164,7 @@ Analyze the image and describe:
 
         response = gemini_service.client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=[prompt, {"mime_type": "image/jpeg", "data": image_bytes}],
+            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime)],
         )
 
         return jsonify({"success": True, "description": response.text})
@@ -1159,8 +1175,8 @@ Analyze the image and describe:
 
         traceback.print_exc()
 
-        return jsonify({"success": False, "description": str(e)})
+        return jsonify({"success": False, "description": "Sorry, I could not describe the scene right now."})
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=os.environ.get("FLASK_ENV") == "development")
