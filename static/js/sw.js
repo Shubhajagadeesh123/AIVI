@@ -9,13 +9,15 @@
 // otherwise app.js/navigation.js changes never reach users, no matter
 // how many times the server is redeployed or the page hard-refreshed.
 // Bump this again any time app.js/navigation.js/styles.css change.
-const CACHE_NAME = "blindmate-v3";
+const CACHE_NAME = "blindmate-v5";
 const urlsToCache = [
   "/",
   "/static/js/app.js",
   "/static/js/navigation.js",
   "/static/js/memory.js",
   "/static/js/sos.js",
+  "/static/js/phrases.js",
+  "/static/js/battery.js",
   "/static/css/styles.css",
   "https://cdn.replit.com/agent/bootstrap-agent-dark-theme.min.css",
   "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css",
@@ -34,6 +36,8 @@ const NETWORK_FIRST_PATTERNS = [
   "/static/js/navigation.js",
   "/static/js/memory.js",
   "/static/js/sos.js",
+  "/static/js/phrases.js",
+  "/static/js/battery.js",
   "/static/css/styles.css",
 ];
 

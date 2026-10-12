@@ -95,21 +95,6 @@ class BlindMate {
         voice: "te-IN",
         greeting: "నమస్కారం! నేను గుర్తింపును ప్రారంభించాలా, సార్?",
       },
-      "bn-IN": {
-        name: "Bengali",
-        voice: "bn-IN",
-        greeting: "নমস্কার! আমি কি সনাক্তকরণ শুরু করব, স্যার?",
-      },
-      "mr-IN": {
-        name: "Marathi",
-        voice: "mr-IN",
-        greeting: "नमस्कार! मी ओळख सुरू करावी का, सर?",
-      },
-      "gu-IN": {
-        name: "Gujarati",
-        voice: "gu-IN",
-        greeting: "નમસ્તે! શું મારે ડિટેક્શન શરૂ કરવું જોઈએ, સર?",
-      },
     };
 
     // Detection settings
@@ -1113,6 +1098,14 @@ class BlindMate {
               e.preventDefault();
               this.triggerSOS();
               break;
+            case "c":
+              e.preventDefault();
+              this.captureAndIdentifyCurrency();
+              break;
+            case "b":
+              e.preventDefault();
+              if (window.BMBattery) window.BMBattery.report();
+              break;
           }
         }
       }
@@ -2048,6 +2041,24 @@ class BlindMate {
       return;
     }
 
+    // "I am safe" ends live location sharing after an emergency.
+    if (window.BM && window.BM.isSafe(command)) {
+      if (window.emergencySOS) window.emergencySOS.stopTracking();
+      return;
+    }
+
+    // "How much battery do I have?"
+    if (window.BM && window.BM.isBatteryRequest(command)) {
+      if (window.BMBattery) window.BMBattery.report();
+      return;
+    }
+
+    // "What note is this?" - identify Indian currency with the camera.
+    if (window.BM && window.BM.isCurrencyRequest(command)) {
+      this.captureAndIdentifyCurrency();
+      return;
+    }
+
     if (
       lower.includes("what are the shortcuts") ||
       lower.includes("show shortcuts") ||
@@ -2155,7 +2166,10 @@ class BlindMate {
       /send\s+help/,
       /this\s+is\s+an?\s+emergency/,
     ];
-    return emergencyPatterns.some((pattern) => pattern.test(lower));
+    return (
+      emergencyPatterns.some((pattern) => pattern.test(lower)) ||
+      (window.BM && window.BM.isEmergency(command))
+    );
   }
 
   /**
@@ -2645,6 +2659,8 @@ class BlindMate {
     const greeting =
       'Hello! I am BlindMate. Object detection is starting now. Say "Hey BlindMate" anytime for voice commands, or long-press anywhere on the screen to stop or start detection.';
     this.speak(greeting, true); // High priority
+    this.acquireWakeLock();
+    setTimeout(() => this.checkEmergencyReadiness(), 12000);
 
     // Start continuous listening for the wake word immediately - no
     // waiting for the greeting to finish first.
@@ -2753,6 +2769,7 @@ class BlindMate {
    * Start object detection
    */
   async startDetection(silent = false) {
+    this.acquireWakeLock();
     try {
       if (!this.model) {
         this.speak("AI model is not ready. Please wait.");
@@ -3385,7 +3402,14 @@ class BlindMate {
       // Keep the full scene description (all current predictions) available for follow-up questions
       this.currentSceneDescription = this.generateSceneDescription(predictions);
 
-      this.speak(announcement, isNavigationMode, true);
+      // Build the same warning in the user's language entirely offline, so
+      // obstacle alerts are instant and never wait on the network.
+      const localized =
+        this.currentLanguage !== "en-IN" && window.BM
+          ? window.BM.composeAnnouncement(objectsWithDistance, this.currentLanguage)
+          : null;
+
+      this.speak(announcement, isNavigationMode, true, localized);
       this.lastAnnouncement = now;
     }
   }
@@ -3827,6 +3851,93 @@ class BlindMate {
         await this.resumeDetectionAfterInteraction();
       }
     }, "image/jpeg");
+  }
+
+  /**
+   * Identify banknotes/coins in front of the camera (Indian rupees).
+   */
+  async captureAndIdentifyCurrency() {
+    if (!(await this.ensureCameraReady())) {
+      this.speak("Camera is not available. Please check camera permissions.", true);
+      return;
+    }
+    this.pauseDetectionForInteraction();
+    this.speak("Looking at the money now. Please hold it flat and close to the camera.", true);
+    this.updateStatus("Identifying money...", "info");
+
+    // give the user a moment to position the note
+    await new Promise((r) => setTimeout(r, 3500));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = this.video.videoWidth;
+    canvas.height = this.video.videoHeight;
+    canvas.getContext("2d").drawImage(this.video, 0, 0);
+
+    canvas.toBlob(async (blob) => {
+      const formData = new FormData();
+      formData.append("image", blob, "money.jpg");
+      try {
+        const response = await fetch("/api/currency", { method: "POST", body: formData });
+        const result = await response.json();
+        if (result.success) {
+          this.updateStatus("Money identified", "success");
+          this.speak(result.text, true);
+        } else {
+          this.updateStatus("Could not identify money", "warning");
+          this.speak(result.message || "I could not identify the money. Please try again.", true);
+        }
+      } catch (error) {
+        console.error(error);
+        this.speak("Sorry, I could not identify the money right now.", true);
+      } finally {
+        await this.resumeDetectionAfterInteraction();
+      }
+    }, "image/jpeg");
+  }
+
+  /**
+   * Keep the screen awake so the camera, detection and wake-word listening
+   * do not stop when the phone's screen times out.
+   */
+  async acquireWakeLock() {
+    if (!("wakeLock" in navigator)) return;
+    if (!this._wakeLockHooked) {
+      this._wakeLockHooked = true;
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") this.acquireWakeLock();
+      });
+    }
+    try {
+      if (this._wakeLock && !this._wakeLock.released) return;
+      this._wakeLock = await navigator.wakeLock.request("screen");
+    } catch (e) {
+      console.warn("Wake lock unavailable:", e && e.message);
+    }
+  }
+
+  /**
+   * Once per session, warn by voice if an emergency alert would not work
+   * (no contact saved / no email service on the server) - so the user finds
+   * out now, not during an emergency.
+   */
+  async checkEmergencyReadiness() {
+    try {
+      if (sessionStorage.getItem("bm_readiness_checked")) return;
+      sessionStorage.setItem("bm_readiness_checked", "1");
+      const res = await fetch("/api/readiness");
+      const r = await res.json();
+      if (!r.has_contacts) {
+        this.speak(
+          "Your emergency contact is not set up yet. Please open settings and add one, so I can alert them in an emergency.",
+        );
+      } else if (!r.email_channel && !r.sms_channel) {
+        this.speak(
+          "Automatic emergency emails are not set up on the server. In an emergency I will open a text message that you must send yourself.",
+        );
+      }
+    } catch (e) {
+      console.warn("Readiness check failed:", e);
+    }
   }
 
   /* ==========================================
@@ -4668,13 +4779,64 @@ class BlindMate {
     };
   }
 
+  /**
+   * Translations are also kept in localStorage, so after the first time a
+   * sentence is translated it is instant even after a page reload.
+   */
+  _readPersistentTranslation(key) {
+    try {
+      const all = JSON.parse(localStorage.getItem("bm_translations") || "{}");
+      return all[key] || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  _writePersistentTranslation(key, value) {
+    try {
+      const all = JSON.parse(localStorage.getItem("bm_translations") || "{}");
+      all[key] = value;
+      const keys = Object.keys(all);
+      if (keys.length > 400) delete all[keys[0]];
+      localStorage.setItem("bm_translations", JSON.stringify(all));
+    } catch (e) {
+      /* storage full or blocked - the in-memory cache still works */
+    }
+  }
+
+  /**
+   * Last-resort speech: never leave the user in silence. Used when a
+   * translation fails or the device has no voice for the chosen language.
+   */
+  speakEnglishFallback(text, priority = false, isObject = false) {
+    if (!window.speechSynthesis || !text) return;
+    // Don't pile up routine object announcements behind each other.
+    if (isObject && !priority && speechSynthesis.speaking) return;
+    if (priority) speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-IN";
+    speechSynthesis.speak(u);
+  }
+
   async translateMessage(text) {
     if (!text) return "";
     const language = this.currentLanguage || "en-IN";
     if (language === "en-IN") return text;
 
+    // Known app sentences (safety messages, navigation prompts) are spoken
+    // instantly from the offline language pack - no network, no AI call.
+    if (window.BM) {
+      const offline = window.BM.lookup(text, language);
+      if (offline) return offline;
+    }
+
     const key = `${language}\u0000${text}`;
     if (this.translationCache.has(key)) return this.translationCache.get(key);
+    const stored = this._readPersistentTranslation(key);
+    if (stored) {
+      this.translationCache.set(key, stored);
+      return stored;
+    }
     if (this.translationInFlight.has(key)) return this.translationInFlight.get(key);
 
     const request = (async () => {
@@ -4689,6 +4851,7 @@ class BlindMate {
         const translated = typeof result.translated === "string" ? result.translated.trim() : "";
         if (!result.success || !translated) throw new Error("Translation returned no text");
         this.translationCache.set(key, translated);
+        this._writePersistentTranslation(key, translated);
         // Keep cache bounded during continuous object detection.
         if (this.translationCache.size > 300) {
           this.translationCache.delete(this.translationCache.keys().next().value);
@@ -5130,9 +5293,6 @@ class BlindMate {
       "kn-IN": "Kannada",
       "ta-IN": "Tamil",
       "te-IN": "Telugu",
-      "bn-IN": "Bengali",
-      "mr-IN": "Marathi",
-      "gu-IN": "Gujarati",
       "es-ES": "Spanish",
       "fr-FR": "French",
       "de-DE": "German",
@@ -5212,7 +5372,7 @@ class BlindMate {
   /**
    * Text-to-speech function with queue management and cooldown
    */
-  async speak(text, priority = false, isObjectAnnouncement = false) {
+  async speak(text, priority = false, isObjectAnnouncement = false, localized = null) {
     console.log("Current Language:", this.currentLanguage);
     console.log("Original Text:", text);
     if (!this.synth || !text) {
@@ -5224,27 +5384,27 @@ class BlindMate {
     ========================================== */
 
     if (this.currentLanguage !== "en-IN") {
-      // Always translate first. Voice availability must never decide whether
-      // the text is translated; that was the source of English/Kannada mixing.
-      const translated = await this.translateMessage(text);
-      if (!translated) {
+      // Offline pre-built text (obstacle announcements) or a translation.
+      const translated = localized || (await this.translateMessage(text));
+      const hasVoice = this.hasVoiceForLanguage(this.currentLanguage);
+
+      if (!translated || !hasVoice) {
+        // Safety first: speaking English is far better than silence.
+        console.warn(
+          !translated
+            ? "Translation unavailable - speaking English."
+            : `No voice for ${this.currentLanguage} - speaking English.`,
+        );
         this.updateStatus(
-          `Could not translate this response to ${this.getLanguageName(this.currentLanguage)}. Please check the AI connection and try again.`,
+          !translated
+            ? "Could not translate; speaking in English instead."
+            : `No ${this.getLanguageName(this.currentLanguage)} voice is installed on this device; speaking in English instead.`,
           "warning",
         );
+        this.speakEnglishFallback(text, priority, isObjectAnnouncement);
         return;
       }
       text = translated;
-
-      // Never send Kannada/Hindi/Tamil/Telugu script to an English voice.
-      if (!this.hasVoiceForLanguage(this.currentLanguage)) {
-        console.warn(`No installed text-to-speech voice for ${this.currentLanguage}.`);
-        this.updateStatus(
-          `No ${this.getLanguageName(this.currentLanguage)} speech voice is installed in Chrome/Windows. Install the language speech pack to hear this language. The text response is still available on screen.`,
-          "warning",
-        );
-        return;
-      }
     }
     console.log("Final Text:", text);
 

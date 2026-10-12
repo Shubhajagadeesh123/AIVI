@@ -66,30 +66,6 @@ class GeminiService:
                 "unknown_command": "ఆ కమాండ్ నాకు అర్థం కాలేదు. దయచేసి మళ్లీ ప్రయత్నించండి.",
                 "language_changed": "భాష మార్చబడింది.",
             },
-            "bn-IN": {
-                "start_detection": "এখন অবজেক্ট ডিটেকশন শুরু করছি।",
-                "stop_detection": "অবজেক্ট ডিটেকশন বন্ধ করছি।",
-                "enable_location": "লোকেশন সেবা চালু করছি।",
-                "navigation_ready": "নেভিগেশন প্রস্তুত।",
-                "unknown_command": "সেই কমান্ডটি আমি বুঝতে পারিনি। দয়া করে আবার চেষ্টা করুন।",
-                "language_changed": "ভাষা পরিবর্তন করা হয়েছে।",
-            },
-            "mr-IN": {
-                "start_detection": "आता ऑब्जेक्ट डिटेक्शन सुरू करत आहे।",
-                "stop_detection": "ऑब्जेक्ट डिटेक्शन थांबवत आहे।",
-                "enable_location": "लोकेशन सेवा सक्षम करत आहे।",
-                "navigation_ready": "नेव्हिगेशन तयार आहे।",
-                "unknown_command": "मला ती कमांड समजली नाही. कृपया पुन्हा प्रयत्न करा.",
-                "language_changed": "भाषा बदलली आहे.",
-            },
-            "gu-IN": {
-                "start_detection": "હવે ઓબ્જેક્ટ ડિટેક્શન શરૂ કરી રહ્યો છું.",
-                "stop_detection": "ઓબ્જેક્ટ ડિટેક્શન બંધ કરી રહ્યો છું.",
-                "enable_location": "લોકેશન સેવાઓ સક્ષમ કરી રહ્યો છું.",
-                "navigation_ready": "નેવિગેશન તૈયાર છે.",
-                "unknown_command": "મને તે કમાન્ડ સમજાઈ નહીં. કૃપા કરીને ફરીથી પ્રયાસ કરો.",
-                "language_changed": "ભાષા બદલવામાં આવી છે.",
-            },
         }
 
     def process_voice_command(
@@ -163,9 +139,6 @@ class GeminiService:
             "kn-IN": "Kannada",
             "ta-IN": "Tamil",
             "te-IN": "Telugu",
-            "bn-IN": "Bengali",
-            "mr-IN": "Marathi",
-            "gu-IN": "Gujarati",
         }
         language_name = language_names.get(language, "English")
 
@@ -261,12 +234,6 @@ Respond only with valid JSON, no extra text."""
             base_prompt += f"\n\nRespond in Tamil (தமிழ்). {tone_instruction}"
         elif language.startswith("te"):
             base_prompt += f"\n\nRespond in Telugu (తెలుగు). {tone_instruction}"
-        elif language.startswith("bn"):
-            base_prompt += f"\n\nRespond in Bengali (বাংলা). {tone_instruction}"
-        elif language.startswith("mr"):
-            base_prompt += f"\n\nRespond in Marathi (मराठी). {tone_instruction}"
-        elif language.startswith("gu"):
-            base_prompt += f"\n\nRespond in Gujarati (ગુજરાતી). {tone_instruction}"
         elif language.startswith("es"):
             base_prompt += f"\n\nRespond in Spanish (Español). {tone_instruction}"
         elif language.startswith("fr"):
@@ -483,12 +450,6 @@ Respond only with valid JSON, no extra text."""
             "தமிழ்": "ta-IN",
             "telugu": "te-IN",
             "తెలుగు": "te-IN",
-            "bengali": "bn-IN",
-            "বাংলা": "bn-IN",
-            "marathi": "mr-IN",
-            "मराठी": "mr-IN",
-            "gujarati": "gu-IN",
-            "ગુજરાતી": "gu-IN",
             "english": "en-IN",
         }
 
@@ -531,8 +492,7 @@ Respond only with valid JSON, no extra text."""
         try:
             language_names = {
                 "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada",
-                "ta-IN": "Tamil", "te-IN": "Telugu", "bn-IN": "Bengali",
-                "mr-IN": "Marathi", "gu-IN": "Gujarati",
+                "ta-IN": "Tamil", "te-IN": "Telugu",
             }
             target_language = language_names.get(language, "English")
             prompt = f"""

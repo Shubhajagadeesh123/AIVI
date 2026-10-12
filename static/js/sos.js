@@ -156,6 +156,8 @@ class EmergencySOS {
   }
 
   async sendAlert(latitude, longitude, contacts) {
+    // Start live location sharing first, so the alert can carry the link.
+    const trackingUrl = await this.startTracking(latitude, longitude);
     try {
       const response = await fetch("/api/emergency", {
         method: "POST",
@@ -166,6 +168,8 @@ class EmergencySOS {
           contacts,
           user_name: this.settings.name || "",
           user_phone: this.settings.userPhone || "",
+          tracking_url: trackingUrl || "",
+          battery: window.BMBattery ? window.BMBattery.snapshot() : null,
         }),
       });
 
@@ -175,6 +179,12 @@ class EmergencySOS {
         this.speak(
           "Emergency alert has been sent to your contacts. Help is on the way.",
         );
+        if (trackingUrl) {
+          this.speak(
+            "Your live location is being shared with your contacts for the next two hours. Say I am safe to stop.",
+            true,
+          );
+        }
       } else {
         // Server has no email/SMS channel configured - be honest about
         // that, and open the native SMS app as a fallback so at least one
@@ -183,14 +193,14 @@ class EmergencySOS {
         this.speak(
           "I could not send the alert automatically. Opening a text message for you now - please tap send.",
         );
-        this.openFallbackSms(contacts, result.raw_message, latitude, longitude);
+        this.openFallbackSms(contacts, result.raw_message, latitude, longitude, trackingUrl);
       }
     } catch (error) {
       console.error(error);
       this.speak(
         "I could not reach the server to send the alert. Opening a text message for you now - please tap send.",
       );
-      this.openFallbackSms(contacts, null, latitude, longitude);
+      this.openFallbackSms(contacts, null, latitude, longitude, trackingUrl);
     }
   }
 
@@ -200,7 +210,7 @@ class EmergencySOS {
    * SMS silently - this is a hard platform/security limitation on every
    * browser - so the user must tap Send once themselves.
    */
-  openFallbackSms(contacts, message, latitude, longitude) {
+  openFallbackSms(contacts, message, latitude, longitude, trackingUrl) {
     const contactWithPhone = contacts.find((c) => c.phone);
     if (!contactWithPhone) {
       this.speak(
@@ -220,7 +230,11 @@ class EmergencySOS {
         this.settings.userPhone
           ? `Call back at ${this.settings.userPhone}. `
           : ""
-      }My location: ${mapsLink}. Please call right away.`;
+      }My location: ${mapsLink}.${
+        window.BMBattery && window.BMBattery.snapshot()
+          ? ` Phone battery: ${window.BMBattery.snapshot().level}%.`
+          : ""
+      }${trackingUrl ? ` Live location: ${trackingUrl}.` : ""} Please call right away.`;
 
     const smsUrl = `sms:${contactWithPhone.phone}?body=${encodeURIComponent(body)}`;
     window.location.href = smsUrl;
@@ -294,13 +308,71 @@ class EmergencySOS {
     }
   }
 
-  speak(text) {
+  speak(text, queue = false) {
+    // Spoken in the user's language from the offline pack when the device
+    // has a voice for it, otherwise in English - never silent.
+    if (window.BM) {
+      window.BM.speakSafe(text, { queue });
+      return;
+    }
     if (!window.speechSynthesis) return;
-    speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    speechSynthesis.speak(utterance);
+    if (!queue) speechSynthesis.cancel();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  }
+
+  /* ---------- live location sharing after an SOS ---------- */
+
+  async startTracking(lat, lng) {
+    if (lat == null || lng == null) return null;
+    try {
+      const res = await fetch("/api/track/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: this.settings.name || "", latitude: lat, longitude: lng }),
+      });
+      const d = await res.json();
+      if (!d.success) return null;
+      this.stopTracking(true); // never run two at once
+      this.trackToken = d.token;
+      this.trackUrl = d.url;
+      this.trackTimer = setInterval(() => this.pushLocation(false), 15000);
+      this.trackEndTimer = setTimeout(() => this.stopTracking(true), 2 * 60 * 60 * 1000);
+      return d.url;
+    } catch (e) {
+      console.warn("Could not start live tracking:", e);
+      return null;
+    }
+  }
+
+  pushLocation(stop) {
+    if (!this.trackToken || !navigator.geolocation) return;
+    const token = this.trackToken;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        fetch("/api/track/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token,
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            stop: !!stop,
+          }),
+        }).catch(() => {});
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 10000 },
+    );
+  }
+
+  stopTracking(silent = false) {
+    const wasTracking = !!this.trackToken;
+    if (wasTracking) this.pushLocation(true);
+    clearInterval(this.trackTimer);
+    clearTimeout(this.trackEndTimer);
+    this.trackToken = null;
+    this.trackUrl = null;
+    if (wasTracking && !silent) this.speak("Location sharing stopped. I am glad you are safe.");
   }
 }
 

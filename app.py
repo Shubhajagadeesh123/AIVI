@@ -6,7 +6,7 @@ import json
 import smtplib
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
-from flask import send_from_directory
+from flask import Response, send_from_directory
 # Load variables from .env into the real process environment. Without
 # this, every os.environ.get(...) call below (Gemini key, SMTP
 # credentials, Maps key, etc.) silently returns None even if they're set
@@ -104,10 +104,85 @@ def persist_client_id(response):
 
 
 def user_file(name):
-    """Path of a data file belonging to the current device."""
+    """Path of a data file belonging to the current device (file fallback)."""
     folder = os.path.join(DATA_DIR, g.cid)
     os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, name)
+
+
+# ---------------------------------------------------------------------------
+# Persistence. With DATABASE_URL set (Postgres on Render/Neon/Supabase, or
+# sqlite for testing) everything lives in one small key-value table and
+# survives redeploys. Without it we fall back to JSON files, which are wiped
+# on Render's free tier every deploy.
+# ---------------------------------------------------------------------------
+_engine = None
+_DB_URL = os.environ.get("DATABASE_URL", "").strip()
+if _DB_URL:
+    try:
+        from sqlalchemy import create_engine, text as _sql
+
+        if _DB_URL.startswith("postgres://"):
+            _DB_URL = "postgresql://" + _DB_URL[len("postgres://"):]
+        _engine = create_engine(_DB_URL, pool_pre_ping=True, pool_recycle=300)
+        with _engine.begin() as _c:
+            _c.execute(_sql(
+                "CREATE TABLE IF NOT EXISTS kv ("
+                "owner VARCHAR(64) NOT NULL, name VARCHAR(64) NOT NULL, "
+                "value TEXT NOT NULL, updated DOUBLE PRECISION NOT NULL, "
+                "PRIMARY KEY (owner, name))"
+            ))
+        logging.info("Using database storage (%s)", _engine.dialect.name)
+    except Exception as _e:
+        logging.error("Database unavailable, falling back to files: %s", _e)
+        _engine = None
+
+
+def db_get(owner, name, default=None):
+    if _engine is None:
+        return None
+    try:
+        with _engine.connect() as c:
+            row = c.execute(
+                _sql("SELECT value FROM kv WHERE owner=:o AND name=:n"),
+                {"o": owner, "n": name},
+            ).fetchone()
+        return json.loads(row[0]) if row else default
+    except Exception as e:
+        logging.error("db_get failed: %s", e)
+        return default
+
+
+def db_set(owner, name, value):
+    try:
+        payload = {"o": owner, "n": name, "v": json.dumps(value, ensure_ascii=False), "t": time.time()}
+        with _engine.begin() as c:
+            res = c.execute(
+                _sql("UPDATE kv SET value=:v, updated=:t WHERE owner=:o AND name=:n"), payload
+            )
+            if res.rowcount == 0:
+                c.execute(
+                    _sql("INSERT INTO kv (owner, name, value, updated) VALUES (:o, :n, :v, :t)"),
+                    payload,
+                )
+        return True
+    except Exception as e:
+        logging.error("db_set failed: %s", e)
+        return False
+
+
+def load_user(name, default):
+    """Read this device's stored value (database first, else file)."""
+    if _engine is not None:
+        return db_get(g.cid, name, default)
+    return load_json_file(user_file(name + ".json"), default)
+
+
+def save_user(name, value):
+    if _engine is not None:
+        return db_set(g.cid, name, value)
+    write_json(user_file(name + ".json"), value)
+    return True
 
 
 def write_json(path, data):
@@ -117,7 +192,7 @@ def write_json(path, data):
 
 LANGUAGE_NAMES = {
     "en-IN": "English", "hi-IN": "Hindi", "kn-IN": "Kannada", "ta-IN": "Tamil",
-    "te-IN": "Telugu", "bn-IN": "Bengali", "mr-IN": "Marathi", "gu-IN": "Gujarati",
+    "te-IN": "Telugu",
 }
 
 
@@ -175,6 +250,9 @@ Rules:
 
 
 
+_TRANSLATION_CACHE = {}
+
+
 @app.route("/api/translate", methods=["POST"])
 def translate():
 
@@ -195,6 +273,10 @@ def translate():
         return jsonify({"success": True, "translated": text})
 
     target_language = LANGUAGE_NAMES.get(language, "English")
+
+    cache_key = (language, text.strip().lower())
+    if cache_key in _TRANSLATION_CACHE:
+        return jsonify({"success": True, "translated": _TRANSLATION_CACHE[cache_key]})
 
     prompt = f"""
 Translate this entire sentence fully into {target_language}, including any object,
@@ -220,7 +302,13 @@ Sentence:
             model="gemini-2.5-flash", contents=prompt
         )
 
-        return jsonify({"success": True, "translated": response.text.strip()})
+        translated = (response.text or "").strip()
+        if not translated:
+            return jsonify({"success": False, "translated": text})
+        if len(_TRANSLATION_CACHE) > 2000:
+            _TRANSLATION_CACHE.pop(next(iter(_TRANSLATION_CACHE)))
+        _TRANSLATION_CACHE[cache_key] = translated
+        return jsonify({"success": True, "translated": translated})
 
     except Exception as e:
 
@@ -257,9 +345,7 @@ def save_memory():
     recent sighting instead of the oldest one ever recorded.
     """
     data = request.get_json(silent=True) or {}
-    MEMORY_FILE = user_file("memory.json")
-
-    memories = load_json_file(MEMORY_FILE, [])
+    memories = load_user("memory", [])
 
     object_name = (data.get("object") or "").strip().lower()
 
@@ -269,14 +355,14 @@ def save_memory():
     ]
     memories.append(data)
 
-    write_json(MEMORY_FILE, memories[-200:])
+    save_user("memory", memories[-200:])
 
     return jsonify({"success": True})
 
 
 @app.route("/api/memory")
 def get_memory():
-    return jsonify(load_json_file(user_file("memory.json"), []))
+    return jsonify(load_user("memory", []))
 
 
 
@@ -289,7 +375,6 @@ def save_place():
     "where is the bathroom" / "take me to the bathroom".
     """
     data = request.get_json(silent=True) or {}
-    PLACES_FILE = user_file("places.json")
 
     name = (data.get("name") or "").strip()
     latitude = data.get("latitude")
@@ -298,7 +383,7 @@ def save_place():
     if not name or latitude is None or longitude is None:
         return jsonify({"success": False, "message": "Missing name or coordinates."}), 400
 
-    places = load_json_file(PLACES_FILE, [])
+    places = load_user("places", [])
 
     # Upsert by name (case-insensitive) - re-saving "bathroom" updates it
     # rather than creating duplicates.
@@ -313,19 +398,19 @@ def save_place():
         }
     )
 
-    write_json(PLACES_FILE, places)
+    save_user("places", places)
 
     return jsonify({"success": True})
 
 
 @app.route("/api/memory/places")
 def get_places():
-    return jsonify(load_json_file(user_file("places.json"), []))
+    return jsonify(load_user("places", []))
 
 
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
-    return jsonify(load_json_file(user_file("user_settings.json"), {}))
+    return jsonify(load_user("settings", {}))
 
 
 @app.route("/api/settings", methods=["POST"])
@@ -335,7 +420,7 @@ def save_settings():
     if not isinstance(data, dict):
         return jsonify({"success": False, "message": "Invalid settings."}), 400
 
-    write_json(user_file("user_settings.json"), data)
+    save_user("settings", data)
 
     return jsonify({"success": True, "message": "Settings saved successfully."})
 
@@ -682,6 +767,16 @@ def emergency():
     contacts = [c for c in contacts if isinstance(c, dict)][:5]
     user_name = (data.get("user_name") or "").strip()
     user_phone = (data.get("user_phone") or "").strip()
+    battery = data.get("battery") if isinstance(data.get("battery"), dict) else {}
+    try:
+        battery_level = int(battery.get("level"))
+        if not 0 <= battery_level <= 100:
+            battery_level = None
+    except (TypeError, ValueError):
+        battery_level = None
+    tracking_url = (data.get("tracking_url") or "").strip()
+    if tracking_url and not tracking_url.startswith(request.host_url):
+        tracking_url = ""  # only ever include links to this site
 
     maps_link = (
         f"https://maps.google.com/?q={latitude},{longitude}"
@@ -697,6 +792,10 @@ def emergency():
         f"{who}, who has you listed as an emergency contact, needs help and cannot call you directly. "
         f"Their current location: {maps_link}.{callback} Please call them as soon as you can."
     )
+    if battery_level is not None:
+        message += f" Their phone battery is at {battery_level}%."
+    if tracking_url:
+        message += f" Live location (updates for the next 2 hours): {tracking_url}"
 
     # This endpoint can send email/SMS, so stop it being used as a spam relay:
     # max 5 alerts per device per 10 minutes.
@@ -756,6 +855,190 @@ def emergency():
             "raw_message": message,
         }
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Readiness check: tells the app (at startup) whether an SOS would actually work.
+# ---------------------------------------------------------------------------
+@app.route("/api/readiness")
+def readiness():
+    settings = load_user("settings", {}) or {}
+    contacts = [
+        (settings.get(f"contact{i}Phone"), settings.get(f"contact{i}Email"))
+        for i in (1, 2, 3)
+    ]
+    has_contacts = any(p or e for p, e in contacts)
+    has_email_contact = any(e for _, e in contacts)
+    email_channel = bool(
+        (os.environ.get("BREVO_API_KEY") and os.environ.get("BREVO_SENDER_EMAIL"))
+        or (os.environ.get("SMTP_EMAIL") and os.environ.get("SMTP_PASSWORD"))
+    )
+    sms_channel = bool(os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"))
+    return jsonify(
+        {
+            "has_contacts": has_contacts,
+            "has_email_contact": has_email_contact,
+            "email_channel": email_channel,
+            "sms_channel": sms_channel,
+            "ai_configured": gemini_service.client is not None,
+            "persistent_storage": _engine is not None,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# Live location sharing after an SOS. The link contains a random token that
+# only the person's contacts receive; it stops working after 2 hours.
+# ---------------------------------------------------------------------------
+TRACK_TTL = 2 * 60 * 60
+
+
+def _track_load(token):
+    if not re.match(r"^[0-9a-f]{32}$", token or ""):
+        return None
+    if _engine is not None:
+        rec = db_get("_track", token)
+    else:
+        rec = _TRACK_MEM.get(token)
+    if rec and time.time() - rec.get("started", 0) > TRACK_TTL:
+        return None
+    return rec
+
+
+def _track_save(token, rec):
+    if _engine is not None:
+        db_set("_track", token, rec)
+    else:
+        _TRACK_MEM[token] = rec
+
+
+_TRACK_MEM = {}
+
+
+@app.route("/api/track/start", methods=["POST"])
+def track_start():
+    data = request.get_json(silent=True) or {}
+    token = uuid.uuid4().hex
+    rec = {
+        "started": time.time(),
+        "name": (data.get("name") or "")[:60],
+        "lat": data.get("latitude"),
+        "lng": data.get("longitude"),
+        "updated": time.time(),
+        "active": True,
+    }
+    _track_save(token, rec)
+    return jsonify({"success": True, "token": token, "url": request.host_url + "track/" + token})
+
+
+@app.route("/api/track/update", methods=["POST"])
+def track_update():
+    data = request.get_json(silent=True) or {}
+    token = data.get("token", "")
+    rec = _track_load(token)
+    if not rec:
+        return jsonify({"success": False, "expired": True}), 404
+    try:
+        lat, lng = float(data.get("latitude")), float(data.get("longitude"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False}), 400
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return jsonify({"success": False}), 400
+    if data.get("stop"):
+        rec["active"] = False
+    rec.update({"lat": lat, "lng": lng, "updated": time.time()})
+    _track_save(token, rec)
+    return jsonify({"success": True})
+
+
+@app.route("/api/track/<token>.json")
+def track_json(token):
+    rec = _track_load(token)
+    if not rec:
+        return jsonify({"found": False}), 404
+    return jsonify(
+        {
+            "found": True,
+            "name": rec.get("name", ""),
+            "lat": rec.get("lat"),
+            "lng": rec.get("lng"),
+            "seconds_ago": int(time.time() - rec.get("updated", 0)),
+            "active": rec.get("active", True),
+        }
+    )
+
+
+TRACK_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live location</title>
+<style>body{font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:24px;max-width:560px;margin:auto}
+h1{font-size:1.4rem}.card{background:#161b22;border-radius:12px;padding:16px;margin:16px 0}
+a.btn{display:block;text-align:center;background:#238636;color:#fff;padding:16px;border-radius:10px;text-decoration:none;font-size:1.1rem}
+.muted{opacity:.7}</style></head><body>
+<h1 id="title">Live location</h1>
+<div class="card"><div id="status">Loading...</div><div id="ago" class="muted"></div></div>
+<a class="btn" id="map" href="#" style="display:none">Open in Google Maps</a>
+<p class="muted">This page updates every 10 seconds and stops working 2 hours after the alert.</p>
+<script>
+const token = location.pathname.split("/").pop();
+async function tick(){
+  try{
+    const r = await fetch("/api/track/"+token+".json"); 
+    if(!r.ok){document.getElementById("status").textContent="This link has expired or is not valid.";return;}
+    const d = await r.json();
+    document.getElementById("title").textContent = (d.name||"Someone")+" - live location";
+    if(d.lat==null){document.getElementById("status").textContent="Waiting for a location...";}
+    else{
+      document.getElementById("status").textContent = d.active ? "Location is being shared." : "Sharing has stopped. This is the last known location.";
+      document.getElementById("ago").textContent = "Last updated "+d.seconds_ago+" seconds ago";
+      const m=document.getElementById("map"); m.href="https://maps.google.com/?q="+d.lat+","+d.lng; m.style.display="block";
+    }
+  }catch(e){document.getElementById("status").textContent="Connection problem, retrying...";}
+}
+tick(); setInterval(tick,10000);
+</script></body></html>"""
+
+
+@app.route("/track/<token>")
+def track_page(token):
+    return Response(TRACK_PAGE, mimetype="text/html")
+
+
+# ---------------------------------------------------------------------------
+# Currency (Indian rupee) identification from the camera.
+# ---------------------------------------------------------------------------
+@app.route("/api/currency", methods=["POST"])
+def identify_currency():
+    if "image" not in request.files:
+        return jsonify({"success": False, "message": "No image received."}), 400
+    if gemini_service.client is None:
+        return jsonify({"success": False, "message": "Currency reading is unavailable. The AI service is not configured."})
+
+    image = request.files["image"]
+    image_bytes = image.read()
+    mime = image.mimetype if (image.mimetype or "").startswith("image/") else "image/jpeg"
+
+    prompt = (
+        "You are helping a blind person identify money. Look at the image and identify every "
+        "Indian rupee banknote or coin visible. Reply in one or two short spoken sentences, "
+        "for example: 'This is a 500 rupee note.' or 'I can see a 10 rupee note and a 5 rupee coin. "
+        "Total 15 rupees.' If the denomination is not clearly visible, say so and ask them to hold "
+        "the note flat, closer, and in good light. Never guess a denomination you cannot see. "
+        "If there is no money in the image, say that."
+    )
+    try:
+        response = gemini_service.client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime)],
+        )
+        text = (response.text or "").strip()
+        if not text:
+            return jsonify({"success": False, "message": "I could not read the money. Please try again."})
+        return jsonify({"success": True, "text": text})
+    except Exception as e:
+        logging.error("Currency identification failed: %s", e)
+        return jsonify({"success": False, "message": "Sorry, I could not identify the money right now."})
 
 
 GENERIC_PLACE_TERMS = {
