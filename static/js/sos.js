@@ -69,7 +69,51 @@ class EmergencySOS {
     ].filter((c) => c.phone || c.email);
   }
 
-  async triggerSOS() {
+  /**
+   * A shake can happen by accident (walking, dropping the phone), and this
+   * sends real messages to real people - so a shake gets a 6 second window
+   * to cancel (touch the screen or press any key). A deliberate trigger
+   * (button, voice command, Ctrl+Shift+E) goes out immediately.
+   */
+  async triggerSOS(source = "manual") {
+    if (this.sosInProgress) return;
+    this.sosInProgress = true;
+    try {
+      if (source === "shake") {
+        const cancelled = await this.waitForCancel(6000);
+        if (cancelled) {
+          this.speak("Emergency alert cancelled.");
+          return;
+        }
+      }
+      await this.runSOS();
+    } finally {
+      this.sosInProgress = false;
+    }
+  }
+
+  waitForCancel(ms) {
+    this.speak(
+      "Shake detected. Sending an emergency alert in a few seconds. Touch the screen to cancel.",
+    );
+    return new Promise((resolve) => {
+      const events = ["touchstart", "mousedown", "keydown"];
+      const done = (cancelled) => {
+        clearTimeout(timer);
+        events.forEach((e) => document.removeEventListener(e, onCancel, true));
+        resolve(cancelled);
+      };
+      const onCancel = () => done(true);
+      const timer = setTimeout(() => done(false), ms);
+      // small delay so the shake motion itself can't cancel it
+      setTimeout(
+        () => events.forEach((e) => document.addEventListener(e, onCancel, true)),
+        800,
+      );
+    });
+  }
+
+  async runSOS() {
     this.speak("Emergency mode activated. Getting your location.");
 
     // Always fetch fresh settings right now, rather than relying on
@@ -107,6 +151,7 @@ class EmergencySOS {
         );
         await this.sendAlert(null, null, contacts);
       },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 },
     );
   }
 
@@ -217,7 +262,7 @@ class EmergencySOS {
       if (delta > SHAKE_THRESHOLD && now - lastShakeTime > SHAKE_COOLDOWN_MS) {
         lastShakeTime = now;
         console.log("Shake detected - triggering emergency SOS");
-        this.triggerSOS();
+        this.triggerSOS("shake");
       }
     };
 

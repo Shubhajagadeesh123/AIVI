@@ -18,6 +18,7 @@ from flask_cors import CORS
 from google.genai import types
 from gemini_service import GeminiService
 import uuid
+import time
 from flask import g
 
 log_level = (
@@ -571,6 +572,40 @@ def send_emergency_email(to_email, contact_name, message, user_name=""):
     surfaced back to the client so failures are actually debuggable
     instead of only appearing in server logs.
     """
+    subject = (
+        f"Urgent: {user_name} needs you to call them"
+        if user_name
+        else "Urgent: Please call your contact"
+    )
+
+    # Preferred: HTTPS email API (Brevo). Hosts like Render's free tier block
+    # outgoing SMTP ports, so smtplib silently fails there; port 443 works.
+    brevo_key = os.environ.get("BREVO_API_KEY")
+    brevo_sender = os.environ.get("BREVO_SENDER_EMAIL")
+    if brevo_key and brevo_sender:
+        try:
+            r = requests.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={"api-key": brevo_key, "accept": "application/json",
+                         "content-type": "application/json"},
+                json={
+                    "sender": {"email": brevo_sender, "name": "BlindMate Alert"},
+                    "to": [{"email": to_email, "name": contact_name or to_email}],
+                    "subject": subject,
+                    "textContent": message,
+                },
+                timeout=12,
+            )
+            if r.status_code in (200, 201):
+                return True, None
+            err = f"Brevo HTTP {r.status_code}: {r.text[:200]}"
+            logging.error(f"Emergency email failed for {to_email}: {err}")
+            return False, err
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            logging.error(f"Emergency email failed for {to_email}: {err}")
+            return False, err
+
     smtp_email = os.environ.get("SMTP_EMAIL")
     smtp_password = os.environ.get("SMTP_PASSWORD")
     smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -582,13 +617,7 @@ def send_emergency_email(to_email, contact_name, message, user_name=""):
             "(check that your .env file is named exactly '.env', not '.env.txt', "
             "and is in the same folder as app.py)"
         )
-        return False, "SMTP_EMAIL/SMTP_PASSWORD not set in .env"
-
-    subject = (
-        f"Urgent: {user_name} needs you to call them"
-        if user_name
-        else "Urgent: Please call your contact"
-    )
+        return False, "No email channel configured (set BREVO_API_KEY + BREVO_SENDER_EMAIL)"
 
     try:
         msg = MIMEText(message)
@@ -638,6 +667,9 @@ def send_emergency_sms(to_phone, message):
         return False
 
 
+_EMERGENCY_LOG = {}
+
+
 @app.route("/api/emergency", methods=["POST"])
 def emergency():
 
@@ -645,6 +677,9 @@ def emergency():
     latitude = data.get("latitude")
     longitude = data.get("longitude")
     contacts = data.get("contacts", [])
+    if not isinstance(contacts, list):
+        contacts = []
+    contacts = [c for c in contacts if isinstance(c, dict)][:5]
     user_name = (data.get("user_name") or "").strip()
     user_phone = (data.get("user_phone") or "").strip()
 
@@ -662,6 +697,16 @@ def emergency():
         f"{who}, who has you listed as an emergency contact, needs help and cannot call you directly. "
         f"Their current location: {maps_link}.{callback} Please call them as soon as you can."
     )
+
+    # This endpoint can send email/SMS, so stop it being used as a spam relay:
+    # max 5 alerts per device per 10 minutes.
+    now = time.time()
+    recent = [t for t in _EMERGENCY_LOG.get(g.cid, []) if now - t < 600]
+    if len(recent) >= 5:
+        return jsonify({"success": False, "message": "Too many alerts. Please call your contact directly.",
+                        "results": [], "maps_link": maps_link, "raw_message": message}), 429
+    recent.append(now)
+    _EMERGENCY_LOG[g.cid] = recent
 
     logging.info("EMERGENCY ALERT triggered - lat=%s lon=%s", latitude, longitude)
 
@@ -713,42 +758,31 @@ def emergency():
     )
 
 
+GENERIC_PLACE_TERMS = {
+    "library", "hospital", "school", "restaurant", "pharmacy", "bank",
+    "grocery store", "gas station", "petrol pump", "shopping mall", "mall", "park", "gym",
+    "university", "college", "airport", "train station", "railway station",
+    "bus station", "bus stand", "hotel", "cinema", "movie theater", "coffee shop",
+    "post office", "temple", "mosque", "church", "police station", "atm",
+    "toilet", "restroom", "supermarket", "clinic", "market",
+}
+
+
+def is_generic_place(address):
+    a = address.lower().strip()
+    if a in GENERIC_PLACE_TERMS:
+        return True
+    if a.endswith("ies") and a[:-3] + "y" in GENERIC_PLACE_TERMS:
+        return True
+    return a.endswith("s") and a[:-1] in GENERIC_PLACE_TERMS
+
+
 def enhance_search_terms(address):
-    """Enhance generic search terms for better geocoding results"""
-    address_lower = address.lower().strip()
-
-    # Add "near me" to generic terms to get local results
-    generic_terms = {
-        "library": "library near me",
-        "hospital": "hospital near me",
-        "school": "school near me",
-        "restaurant": "restaurant near me",
-        "pharmacy": "pharmacy near me",
-        "bank": "bank near me",
-        "grocery store": "grocery store near me",
-        "gas station": "gas station near me",
-        "shopping mall": "shopping mall near me",
-        "park": "park near me",
-        "gym": "gym near me",
-        "university": "university near me",
-        "college": "college near me",
-        "airport": "airport near me",
-        "train station": "train station near me",
-        "bus station": "bus station near me",
-        "hotel": "hotel near me",
-        "cinema": "cinema near me",
-        "movie theater": "movie theater near me",
-        "coffee shop": "coffee shop near me",
-        "post office": "post office near me",
-    }
-
-    # Check if it's a generic term
-    for term, enhanced in generic_terms.items():
-        if address_lower == term or address_lower == term + "s":
-            return enhanced
-
-    # If it's already a specific address, return as is
-    return address
+    """Clean up a spoken destination. (Nominatim does not understand
+    'near me', so nearby-ness is handled with a bounded viewbox instead.)"""
+    a = re.sub(r"^(the|a|an)\s+", "", address.strip(), flags=re.I)
+    a = re.sub(r"\s+(near me|nearby|near here)$", "", a, flags=re.I)
+    return a or address
 
 
 # Free OpenStreetMap-based navigation. No API key, no billing account.
@@ -770,49 +804,42 @@ OSRM_FOOT_URL = "https://routing.openstreetmap.de/routed-foot/route/v1/foot"
 OSM_USER_AGENT = "AIVI-VoiceNavigation/1.0 (accessibility assistant; contact via app settings)"
 
 
-def geocode_address_osm(address, near_lat=None, near_lng=None):
-    """Geocode an address/place name using Nominatim, optionally biased
-    towards a nearby point so ambiguous queries like "pharmacy" or
-    "library" resolve to the closest sensible match."""
-    try:
-        enhanced_address = enhance_search_terms(address)
-
-        params = {
-            "q": enhanced_address,
-            "format": "jsonv2",
-            "limit": 1,
-            "addressdetails": 0,
-        }
-
-        # Bias results towards the user's location with a generous
-        # viewbox (~0.5 degrees, roughly 50km) without hard-excluding
-        # results outside it - keeps "take me to the Eiffel Tower"
-        # working even if the user isn't in Paris.
-        if near_lat is not None and near_lng is not None:
-            params["viewbox"] = (
-                f"{near_lng-0.5},{near_lat+0.5},{near_lng+0.5},{near_lat-0.5}"
-            )
-            params["bounded"] = 0
-
-        headers = {"User-Agent": OSM_USER_AGENT}
-
-        logging.info(f"Geocoding via Nominatim: {address} (enhanced: {enhanced_address})")
-        response = requests.get(
-            NOMINATIM_URL, params=params, headers=headers, timeout=30
+def _nominatim_search(query, near_lat, near_lng, delta, bounded):
+    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 0}
+    if near_lat is not None and near_lng is not None:
+        params["viewbox"] = (
+            f"{near_lng-delta},{near_lat+delta},{near_lng+delta},{near_lat-delta}"
         )
-        response.raise_for_status()
+        params["bounded"] = 1 if bounded else 0
+    response = requests.get(
+        NOMINATIM_URL, params=params, headers={"User-Agent": OSM_USER_AGENT}, timeout=12
+    )
+    response.raise_for_status()
+    return response.json()
 
-        try:
-            results = response.json()
-        except Exception as e:
-            logging.error(f"Failed to parse Nominatim response: {e}")
-            return {"error": "PARSE_ERROR", "message": "Unable to find location"}
+
+def geocode_address_osm(address, near_lat=None, near_lng=None):
+    """Geocode a spoken place name with Nominatim. Generic words like
+    'pharmacy' are searched only within ~10 km of the user (so you get the
+    closest one, not one in another city); specific names/addresses are only
+    biased towards the user's area."""
+    try:
+        query = enhance_search_terms(address)
+        results = []
+        have_pos = near_lat is not None and near_lng is not None
+
+        if have_pos and is_generic_place(query):
+            results = _nominatim_search(query, near_lat, near_lng, 0.1, True)
+            if not results:
+                results = _nominatim_search(query, near_lat, near_lng, 0.4, True)
+        if not results:
+            results = _nominatim_search(query, near_lat, near_lng, 0.5, False)
 
         if not results:
             logging.warning(f"No Nominatim results for: {address}")
             return {
                 "error": "ZERO_RESULTS",
-                "message": f'Could not find "{address}" near your location. Please try a more specific address.',
+                "message": f'Could not find "{address}" near you. Please try a more specific name or address.',
             }
 
         top = results[0]
@@ -826,7 +853,7 @@ def geocode_address_osm(address, near_lat=None, near_lng=None):
         logging.error("Nominatim geocoding timeout")
         return {"error": "TIMEOUT", "message": "Navigation service timeout"}
     except requests.exceptions.RequestException as e:
-        logging.error(f"HTTP error geocoding address via Nominatim: {e}")
+        logging.error(f"HTTP error geocoding via Nominatim: {e}")
         return {"error": "REQUEST_FAILED", "message": "Navigation service unavailable"}
     except Exception as e:
         logging.error(f"Nominatim geocoding error: {e}")
@@ -852,7 +879,7 @@ def get_osrm_directions(origin, destination):
         headers = {"User-Agent": OSM_USER_AGENT}
 
         logging.info(f"Getting OSRM walking directions from {origin} to {destination}")
-        response = requests.get(url, params=params, headers=headers, timeout=30)
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
 
         try:

@@ -171,7 +171,13 @@ class BlindMate {
 
     // Wake word detection
     this.isListeningForWakeWord = true;
-    this.wakeWords = ["hey blindmate", "blindmate"];
+    this.wakeWords = [
+      "hey blindmate",
+      "hey blind mate",
+      "hey blind made",
+      "blindmate",
+      "blind mate",
+    ];
     this.continuousRecognition = null;
     // Tracks whether continuousRecognition.start() has actually fired
     // (only set to true in onstart, false in onend/onerror). This is the
