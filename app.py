@@ -722,33 +722,69 @@ def send_emergency_email(to_email, contact_name, message, user_name=""):
         return False, error_detail
 
 
+def _normalize_phone(phone):
+    """Convert a phone number to E.164 (+<country><number>) as Twilio requires.
+    Numbers without a leading + get TWILIO_DEFAULT_COUNTRY_CODE (default +91)."""
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return None
+    if raw.startswith("+"):
+        return "+" + digits
+    if raw.startswith("00"):
+        return "+" + digits[2:]
+    default_cc = re.sub(r"\D", "", os.environ.get("TWILIO_DEFAULT_COUNTRY_CODE", "+91"))
+    digits = digits.lstrip("0")
+    return f"+{default_cc}{digits}"
+
+
+def _twilio_sms_from():
+    return (
+        os.environ.get("TWILIO_SMS_FROM_NUMBER")
+        or os.environ.get("TWILIO_PHONE_NUMBER")
+        or ""
+    ).strip()
+
+
 def send_emergency_sms(to_phone, message):
     """
-    Send a real SMS via Twilio, if configured. Env vars: TWILIO_ACCOUNT_SID,
-    TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER. Returns True only if the SMS
-    genuinely sent. This is optional - Twilio is a paid service - email
-    alerts work without it.
+    Send a real SMS via Twilio. Env vars: TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN, and TWILIO_SMS_FROM_NUMBER (or TWILIO_PHONE_NUMBER).
+    Returns True only if Twilio accepted the message.
     """
-    account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-    auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-    from_number = os.environ.get("TWILIO_PHONE_NUMBER")
+    account_sid = (os.environ.get("TWILIO_ACCOUNT_SID") or "").strip()
+    auth_token = (os.environ.get("TWILIO_AUTH_TOKEN") or "").strip()
+    from_number = _twilio_sms_from()
 
     if not (account_sid and auth_token and from_number):
-        logging.info(
-            "Emergency SMS skipped: Twilio credentials not set (this is optional - only needed if you want SMS in addition to email)"
+        logging.warning(
+            "Emergency SMS skipped: set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_SMS_FROM_NUMBER"
         )
+        return False
+
+    to_number = _normalize_phone(to_phone)
+    if not to_number:
+        logging.error("Emergency SMS skipped: invalid phone number %r", to_phone)
         return False
 
     try:
         response = requests.post(
             f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
             auth=(account_sid, auth_token),
-            data={"From": from_number, "To": to_phone, "Body": message},
-            timeout=10,
+            data={"From": from_number, "To": to_number, "Body": message},
+            timeout=15,
         )
-        return response.status_code == 201
+        if response.status_code != 201:
+            # Twilio explains the problem here (unverified number, geo-permission, bad format...)
+            logging.error(
+                "Twilio SMS to %s failed: HTTP %s - %s",
+                to_number, response.status_code, response.text[:500],
+            )
+            return False
+        logging.info("Twilio SMS queued to %s (sid=%s)", to_number, response.json().get("sid"))
+        return True
     except Exception as e:
-        logging.error(f"Emergency SMS failed for {to_phone}: {e}")
+        logging.error(f"Emergency SMS failed for {to_number}: {e}")
         return False
 
 
@@ -874,7 +910,7 @@ def readiness():
         (os.environ.get("BREVO_API_KEY") and os.environ.get("BREVO_SENDER_EMAIL"))
         or (os.environ.get("SMTP_EMAIL") and os.environ.get("SMTP_PASSWORD"))
     )
-    sms_channel = bool(os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"))
+    sms_channel = bool(os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN") and _twilio_sms_from())
     return jsonify(
         {
             "has_contacts": has_contacts,
